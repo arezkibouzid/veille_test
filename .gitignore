@@ -1,1 +1,6 @@
-mpnet_sgd_artifacts/
+.venv/
+./mpnet_sgd_artifacts/
+./data/
+./mlruns/
+./mlflow.db
+./__pycache__/
