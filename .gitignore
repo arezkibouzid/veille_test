@@ -1,5 +1,5 @@
 .venv/
-./mpnet_sgd_artifacts/
+mpnet_sgd_artifacts/
 ./data/
 ./mlruns/
 ./mlflow.db
