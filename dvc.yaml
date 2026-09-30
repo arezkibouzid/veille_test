@@ -1,0 +1,30 @@
+stages:
+  preprocess:
+    cmd: python -m src.preprocess
+    deps:
+      - data/manual_labels_with_hal_metadata.csv
+      - src/preprocess.py
+      - config/config.py
+
+  encode:
+    cmd: python -c "from src.encode import load_encoder; load_encoder()"
+    deps:
+      - src/encode.py
+      - config/config.py
+    outs:
+      - mpnet_sgd_artifacts/mpnet_encoder
+
+  train_and_evaluate:
+    cmd: python main.py
+    deps:
+      - data/manual_labels_with_hal_metadata.csv
+      - src/
+      - config/config.py
+    outs:
+      - mpnet_sgd_artifacts/sgd_classifier.joblib
+      - mpnet_sgd_artifacts/subaxis_references.joblib
+      - mpnet_sgd_artifacts/best_metric.json
+      - mpnet_sgd_artifacts/metadata.json
+    metrics:
+      - mpnet_sgd_artifacts/best_metric.json:
+          cache: false
