@@ -1,0 +1,976 @@
+---
+title: "Validation"
+page-layout: full
+execute:
+  echo: false
+  warning: false
+---
+
+```{=html}
+<div class="validation-hero">
+  <div>
+    <div class="validation-kicker">CLUSTER SEQUOIA</div>
+    <h1>Validation des nouvelles publications</h1>
+    <p>
+      Confirmer la prédiction du modèle ou corriger directement le pilier
+      et l’axe scientifique.
+    </p>
+  </div>
+
+  <div class="validation-stats">
+    <div>
+      <strong id="stat-pending">—</strong>
+      <span>à vérifier</span>
+    </div>
+    <div>
+      <strong id="stat-validated">—</strong>
+      <span>validées</span>
+    </div>
+  </div>
+</div>
+
+<div class="validation-toolbar">
+  <label>
+    Validateur
+    <input
+      id="reviewer-input"
+      type="text"
+      placeholder="Nom ou initiales"
+      autocomplete="off"
+    />
+  </label>
+
+  <label>
+    Ordre
+    <select id="order-select">
+      <option value="confidence_asc">Moins sûres d’abord</option>
+      <option value="confidence_desc">Plus sûres d’abord</option>
+      <option value="year_desc">Plus récentes d’abord</option>
+    </select>
+  </label>
+
+  <label class="search-field">
+    Recherche
+    <input
+      id="search-input"
+      type="search"
+      placeholder="Titre, auteur, HAL ID…"
+    />
+  </label>
+
+  <button id="search-button" class="btn-secondary">
+    Rechercher
+  </button>
+</div>
+
+<div id="validation-message" class="validation-message"></div>
+
+<div id="empty-state" class="empty-state" hidden>
+  <h3>Aucune publication à valider</h3>
+  <p>La file de validation est vide pour la sélection actuelle.</p>
+</div>
+
+<div id="validation-card" class="validation-card" hidden>
+
+  <div class="article-meta-row">
+    <span id="article-year" class="meta-badge"></span>
+    <span id="article-hal-id" class="meta-badge muted"></span>
+    <span id="queue-position" class="meta-badge muted"></span>
+  </div>
+
+  <h2 id="article-title"></h2>
+
+  <div id="article-authors" class="article-authors"></div>
+
+  <div class="article-links">
+    <a id="article-hal-link" href="#" target="_blank" rel="noopener">
+      Voir sur HAL
+    </a>
+    <a id="article-doi-link" href="#" target="_blank" rel="noopener" hidden>
+      DOI
+    </a>
+  </div>
+
+  <div class="abstract-box">
+    <div class="abstract-label">Résumé</div>
+    <p id="article-abstract"></p>
+  </div>
+
+  <div class="prediction-grid">
+    <div class="prediction-card">
+      <span class="prediction-label">Pilier proposé</span>
+      <strong id="predicted-pillar"></strong>
+      <span id="pillar-confidence" class="confidence"></span>
+    </div>
+
+    <div class="prediction-card">
+      <span class="prediction-label">Axe proposé</span>
+      <strong id="predicted-axis"></strong>
+      <span id="axis-similarity" class="confidence"></span>
+    </div>
+  </div>
+
+  <div class="correction-panel">
+    <h3>Validation humaine</h3>
+
+    <div class="correction-grid">
+      <label>
+        Pilier
+        <select id="pillar-select"></select>
+      </label>
+
+      <label>
+        Axe
+        <select id="axis-select"></select>
+      </label>
+    </div>
+
+    <div class="action-row">
+      <button id="previous-article" class="btn-secondary">
+        ← Précédent
+      </button>
+
+      <button id="validate-as-is" class="btn-primary">
+        ✓ Valider tel quel
+      </button>
+
+      <button id="validate-correction" class="btn-accent">
+        Corriger et valider
+      </button>
+
+      <button id="skip-article" class="btn-secondary">
+        Passer
+      </button>
+    </div>
+  </div>
+
+</div>
+```
+
+```{=html}
+<script>
+(() => {
+  // En local, FastAPI tourne sur le port 8000.
+  // Lors du déploiement, il suffira de remplacer cette URL.
+  const API_BASE =
+    ((window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1") &&
+    window.location.port !== "10000")
+      ? "http://127.0.0.1:8000"
+      : "";
+
+  const state = {
+    items: [],
+    index: 0,
+    total: 0,
+    taxonomy: null,
+    search: "",
+    order: "confidence_asc"
+  };
+
+  const el = id => document.getElementById(id);
+
+  const statPending = el("stat-pending");
+  const statValidated = el("stat-validated");
+  const reviewerInput = el("reviewer-input");
+  const orderSelect = el("order-select");
+  const searchInput = el("search-input");
+  const searchButton = el("search-button");
+
+  const messageBox = el("validation-message");
+  const emptyState = el("empty-state");
+  const card = el("validation-card");
+
+  const yearEl = el("article-year");
+  const halIdEl = el("article-hal-id");
+  const positionEl = el("queue-position");
+  const titleEl = el("article-title");
+  const authorsEl = el("article-authors");
+  const abstractEl = el("article-abstract");
+  const halLink = el("article-hal-link");
+  const doiLink = el("article-doi-link");
+
+  const predictedPillarEl = el("predicted-pillar");
+  const predictedAxisEl = el("predicted-axis");
+  const pillarConfidenceEl = el("pillar-confidence");
+  const axisSimilarityEl = el("axis-similarity");
+
+  const pillarSelect = el("pillar-select");
+  const axisSelect = el("axis-select");
+
+  const previousButton = el("previous-article");
+  const validateAsIsButton = el("validate-as-is");
+  const validateCorrectionButton = el("validate-correction");
+  const skipButton = el("skip-article");
+
+  reviewerInput.value = localStorage.getItem("sequoia_reviewer") || "";
+
+  reviewerInput.addEventListener("input", () => {
+    localStorage.setItem(
+      "sequoia_reviewer",
+      reviewerInput.value.trim()
+    );
+  });
+
+  function showMessage(text, type = "info") {
+    messageBox.textContent = text || "";
+    messageBox.className = `validation-message ${type}`;
+  }
+
+  function formatPercent(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return "—";
+    }
+
+    return `${Math.round(Number(value) * 100)} %`;
+  }
+
+  function formatSimilarity(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return "—";
+    }
+
+    return Number(value).toFixed(3);
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
+      ...options
+    });
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch (_) {}
+
+      throw new Error(detail);
+    }
+
+    return response.json();
+  }
+
+  async function loadStats() {
+    const stats = await api("/api/validation/stats");
+
+    statPending.textContent =
+      Number(stats.to_review || 0).toLocaleString("fr-FR");
+
+    statValidated.textContent =
+      Number(stats.validated || 0).toLocaleString("fr-FR");
+  }
+
+  async function loadTaxonomy() {
+    state.taxonomy = await api("/api/taxonomy");
+
+    pillarSelect.innerHTML = "";
+
+    for (const pillar of state.taxonomy.pillars) {
+      const option = document.createElement("option");
+      option.value = pillar;
+      option.textContent = pillar;
+      pillarSelect.appendChild(option);
+    }
+  }
+
+  function refreshAxisOptions(selectedAxis = "") {
+    const pillar = pillarSelect.value;
+    const axes =
+      state.taxonomy?.axes_by_pillar?.[pillar] || [];
+
+    axisSelect.innerHTML = "";
+
+    if (pillar === "No class") {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Aucun axe";
+      axisSelect.appendChild(option);
+      axisSelect.disabled = true;
+      return;
+    }
+
+    axisSelect.disabled = false;
+
+    for (const axis of axes) {
+      const option = document.createElement("option");
+      option.value = axis;
+      option.textContent = axis;
+
+      if (axis === selectedAxis) {
+        option.selected = true;
+      }
+
+      axisSelect.appendChild(option);
+    }
+
+    if (
+      selectedAxis &&
+      !axes.includes(selectedAxis)
+    ) {
+      axisSelect.value = axes[0] || "";
+    }
+  }
+
+  function currentArticle() {
+    return state.items[state.index] || null;
+  }
+
+  function renderCurrent() {
+    const article = currentArticle();
+
+    if (!article) {
+      card.hidden = true;
+      emptyState.hidden = false;
+      return;
+    }
+
+    emptyState.hidden = true;
+    card.hidden = false;
+
+    yearEl.textContent = article.year || "Année inconnue";
+    halIdEl.textContent = article.halId_s || "";
+
+    positionEl.textContent =
+      `${state.index + 1} / ${state.items.length}` +
+      (state.total > state.items.length
+        ? ` — ${state.total.toLocaleString("fr-FR")} trouvées`
+        : "");
+
+    titleEl.textContent =
+      article.title || "Sans titre";
+
+    authorsEl.textContent =
+      article.authors || "Auteurs non renseignés";
+
+    abstractEl.textContent =
+      article.abstract || "Résumé non disponible.";
+
+    if (article.url) {
+      halLink.href = article.url;
+      halLink.hidden = false;
+    } else {
+      halLink.hidden = true;
+    }
+
+    if (article.doi) {
+      const doi = String(article.doi)
+        .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+        .replace(/^doi:\s*/i, "");
+
+      doiLink.href = `https://doi.org/${encodeURIComponent(doi)}`;
+      doiLink.hidden = false;
+    } else {
+      doiLink.hidden = true;
+    }
+
+    predictedPillarEl.textContent =
+      article.predicted_pillar || "—";
+
+    predictedAxisEl.textContent =
+      article.predicted_axis || "—";
+
+    pillarConfidenceEl.textContent =
+      `Confiance : ${formatPercent(article.pillar_confidence)}`;
+
+    axisSimilarityEl.textContent =
+      `Similarité : ${formatSimilarity(article.axis_similarity)}`;
+
+    pillarSelect.value =
+      article.predicted_pillar || "No class";
+
+    refreshAxisOptions(
+      article.predicted_axis || ""
+    );
+
+    showMessage("");
+  }
+
+  async function loadQueue() {
+    showMessage("Chargement de la file de validation…");
+
+    const params = new URLSearchParams({
+      limit: "200",
+      offset: "0",
+      order: state.order
+    });
+
+    if (state.search) {
+      params.set("search", state.search);
+    }
+
+    const result = await api(
+      `/api/articles/to-review?${params.toString()}`
+    );
+
+    state.items = result.items || [];
+    state.total = Number(result.total || 0);
+    state.index = 0;
+
+    renderCurrent();
+    showMessage("");
+  }
+
+  async function submitValidation(pillar, axis) {
+    const article = currentArticle();
+
+    if (!article) {
+      return;
+    }
+
+    const reviewer =
+      reviewerInput.value.trim() || null;
+
+    previousButton.disabled = true;
+    validateAsIsButton.disabled = true;
+    validateCorrectionButton.disabled = true;
+    skipButton.disabled = true;
+
+    try {
+      await api(
+        `/api/articles/${encodeURIComponent(article.halId_s)}/validate`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            validated_pillar: pillar,
+            validated_axis: axis || null,
+            reviewer
+          })
+        }
+      );
+
+      showMessage(
+        `✓ ${article.halId_s} validé.`,
+        "success"
+      );
+
+      state.items.splice(state.index, 1);
+      state.total = Math.max(0, state.total - 1);
+
+      if (state.index >= state.items.length) {
+        state.index = Math.max(
+          0,
+          state.items.length - 1
+        );
+      }
+
+      await loadStats();
+
+      if (
+        state.items.length === 0 &&
+        state.total > 0
+      ) {
+        await loadQueue();
+      } else {
+        renderCurrent();
+      }
+
+    } catch (error) {
+      showMessage(
+        `Erreur : ${error.message}`,
+        "error"
+      );
+
+    } finally {
+      previousButton.disabled = false;
+      validateAsIsButton.disabled = false;
+      validateCorrectionButton.disabled = false;
+      skipButton.disabled = false;
+    }
+  }
+
+  validateAsIsButton.addEventListener(
+    "click",
+    async () => {
+      const article = currentArticle();
+
+      if (!article) return;
+
+      await submitValidation(
+        article.predicted_pillar,
+        article.predicted_axis
+      );
+    }
+  );
+
+  validateCorrectionButton.addEventListener(
+    "click",
+    async () => {
+      await submitValidation(
+        pillarSelect.value,
+        axisSelect.value
+      );
+    }
+  );
+
+  previousButton.addEventListener(
+    "click",
+    () => {
+      if (state.items.length <= 1) {
+        return;
+      }
+
+      state.index =
+        (state.index - 1 + state.items.length) % state.items.length;
+
+      renderCurrent();
+    }
+  );
+
+  skipButton.addEventListener(
+    "click",
+    () => {
+      if (state.items.length <= 1) {
+        return;
+      }
+
+      state.index =
+        (state.index + 1) % state.items.length;
+
+      renderCurrent();
+    }
+  );
+
+  pillarSelect.addEventListener(
+    "change",
+    () => {
+      refreshAxisOptions("");
+    }
+  );
+
+  orderSelect.addEventListener(
+    "change",
+    async () => {
+      state.order = orderSelect.value;
+
+      try {
+        await loadQueue();
+      } catch (error) {
+        showMessage(
+          `Erreur : ${error.message}`,
+          "error"
+        );
+      }
+    }
+  );
+
+  searchButton.addEventListener(
+    "click",
+    async () => {
+      state.search = searchInput.value.trim();
+
+      try {
+        await loadQueue();
+      } catch (error) {
+        showMessage(
+          `Erreur : ${error.message}`,
+          "error"
+        );
+      }
+    }
+  );
+
+  searchInput.addEventListener(
+    "keydown",
+    event => {
+      if (event.key === "Enter") {
+        searchButton.click();
+      }
+    }
+  );
+
+  async function initialize() {
+    try {
+      await Promise.all([
+        loadTaxonomy(),
+        loadStats()
+      ]);
+
+      await loadQueue();
+
+    } catch (error) {
+      card.hidden = true;
+      emptyState.hidden = true;
+
+      showMessage(
+        "Impossible de joindre l’API de validation. " +
+        `Détail : ${error.message}`,
+        "error"
+      );
+    }
+  }
+
+  initialize();
+})();
+</script>
+```
+
+```{=html}
+<style>
+.validation-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+
+  margin: 1.8rem 0 1rem;
+  padding: 2.3rem 2.7rem;
+
+  border-radius: 22px;
+  color: white;
+
+  background:
+    radial-gradient(
+      circle at 82% 20%,
+      rgba(70, 120, 255, 0.72),
+      transparent 34%
+    ),
+    linear-gradient(
+      120deg,
+      #101b3c 0%,
+      #172554 55%,
+      #244ba8 100%
+    );
+
+  box-shadow:
+    0 12px 35px rgba(16, 27, 60, 0.16);
+}
+
+.validation-kicker {
+  margin-bottom: 0.45rem;
+
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14rem;
+
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.validation-hero h1 {
+  margin: 0 0 0.55rem;
+  color: white !important;
+  font-size: 2.3rem;
+}
+
+.validation-hero p {
+  max-width: 760px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.validation-stats {
+  display: flex;
+  gap: 1.2rem;
+}
+
+.validation-stats div {
+  min-width: 115px;
+  padding: 1rem 1.2rem;
+
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.validation-stats strong {
+  display: block;
+  color: white;
+  font-size: 1.55rem;
+}
+
+.validation-stats span {
+  font-size: 0.76rem;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.validation-toolbar {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 0.8fr)
+    minmax(190px, 1fr)
+    minmax(250px, 1.5fr)
+    auto;
+  gap: 0.8rem;
+  align-items: end;
+
+  margin: 1rem 0;
+  padding: 1rem;
+
+  border: 1px solid #e4e8f0;
+  border-radius: 15px;
+  background: white;
+}
+
+.validation-toolbar label,
+.correction-grid label {
+  display: grid;
+  gap: 0.35rem;
+
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #59647a;
+}
+
+.validation-toolbar input,
+.validation-toolbar select,
+.correction-grid select {
+  width: 100%;
+  min-height: 42px;
+
+  padding: 0.55rem 0.7rem;
+
+  border: 1px solid #d8deea;
+  border-radius: 9px;
+
+  background: white;
+  color: #172033;
+}
+
+.validation-card {
+  margin: 1rem 0 2rem;
+  padding: 1.5rem;
+
+  border: 1px solid #e4e8f0;
+  border-radius: 18px;
+
+  background: white;
+
+  box-shadow:
+    0 5px 20px rgba(20, 31, 60, 0.05);
+}
+
+.article-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.meta-badge {
+  display: inline-flex;
+  align-items: center;
+
+  padding: 0.28rem 0.6rem;
+
+  border-radius: 999px;
+
+  background: #eaf0ff;
+  color: #244ba8;
+
+  font-size: 0.73rem;
+  font-weight: 700;
+}
+
+.meta-badge.muted {
+  background: #f1f3f7;
+  color: #697287;
+}
+
+.validation-card h2 {
+  margin: 0.8rem 0 0.35rem;
+  color: #172554;
+  font-size: 1.35rem;
+}
+
+.article-authors {
+  color: #5e687d;
+  font-size: 0.9rem;
+}
+
+.article-links {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.abstract-box {
+  margin-top: 1.15rem;
+  padding: 1rem 1.1rem;
+
+  border-radius: 12px;
+  background: #f7f8fb;
+}
+
+.abstract-label,
+.prediction-label {
+  display: block;
+
+  margin-bottom: 0.35rem;
+
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04rem;
+
+  color: #6c7588;
+}
+
+.abstract-box p {
+  margin: 0;
+
+  max-height: 260px;
+  overflow: auto;
+
+  line-height: 1.55;
+}
+
+.prediction-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+
+  margin-top: 1rem;
+}
+
+.prediction-card {
+  padding: 1rem;
+
+  border: 1px solid #dfe5f0;
+  border-radius: 12px;
+
+  background: #fbfcff;
+}
+
+.prediction-card strong {
+  display: block;
+
+  color: #172554;
+  font-size: 1rem;
+}
+
+.confidence {
+  display: block;
+
+  margin-top: 0.35rem;
+
+  color: #697287;
+  font-size: 0.78rem;
+}
+
+.correction-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+
+  border-top: 1px solid #e4e8f0;
+}
+
+.correction-panel h3 {
+  margin: 0 0 0.8rem;
+  color: #172554;
+}
+
+.correction-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+
+  margin-top: 1rem;
+}
+
+.action-row button,
+.validation-toolbar button {
+  min-height: 42px;
+
+  padding: 0.55rem 0.9rem;
+
+  border: 0;
+  border-radius: 9px;
+
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: #172554;
+  color: white;
+}
+
+.btn-accent {
+  background: #315fcb;
+  color: white;
+}
+
+.btn-secondary {
+  background: #eef1f6;
+  color: #26334f;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.validation-message {
+  min-height: 1.4rem;
+  margin: 0.4rem 0;
+
+  font-size: 0.85rem;
+}
+
+.validation-message.success {
+  color: #08734f;
+}
+
+.validation-message.error {
+  padding: 0.7rem 0.8rem;
+
+  border-radius: 8px;
+
+  background: #fff1f1;
+  color: #a31c1c;
+}
+
+.empty-state {
+  margin: 1rem 0;
+  padding: 2rem;
+
+  text-align: center;
+
+  border: 1px dashed #cfd6e3;
+  border-radius: 16px;
+
+  background: white;
+}
+
+@media (max-width: 900px) {
+  .validation-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .validation-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .prediction-grid,
+  .correction-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .validation-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .validation-stats {
+    width: 100%;
+  }
+
+  .validation-stats div {
+    flex: 1;
+  }
+}
+</style>
+```

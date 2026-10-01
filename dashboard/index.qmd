@@ -1,0 +1,664 @@
+---
+title: "Vue d'ensemble"
+page-layout: full
+execute:
+  echo: false
+  warning: false
+---
+
+```{ojs}
+API_BASE = (
+  (location.hostname === "localhost" ||
+   location.hostname === "127.0.0.1") &&
+  location.port !== "10000"
+)
+  ? "http://127.0.0.1:8000"
+  : ""
+
+apiJson = async path => {
+  const response = await fetch(`${API_BASE}${path}`)
+
+  if (!response.ok) {
+    throw new Error(
+      `API indisponible (${path}) : HTTP ${response.status}`
+    )
+  }
+
+  return await response.json()
+}
+
+dashboardPayload = await apiJson("/api/dashboard/publications")
+labsPayload = await apiJson("/api/dashboard/labs")
+
+publications = dashboardPayload.items ?? []
+publicationLabsCluster = labsPayload.items ?? []
+```
+
+```{ojs}
+yearOptions = [
+  "Toutes",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.year)
+        .filter(d => d != null)
+        .map(d => String(d))
+    )
+  ).sort()
+]
+
+pillarOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.pillar)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+
+axisOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.axis)
+        .filter(
+          d =>
+            d &&
+            d.trim() !== "" &&
+            d !== "No class"
+        )
+    )
+  ).sort()
+]
+
+labOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publicationLabsCluster
+        .map(d => d.lab)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+```
+
+```{ojs}
+html`
+<section class="hero-banner">
+  <div>
+    <div class="hero-kicker">CLUSTER SEQUOIA</div>
+    <h1>Veille scientifique</h1>
+    <p>Vue synthétique du corpus scientifique du Cluster.</p>
+  </div>
+
+  <div class="hero-meta">
+    <strong>${publications.length.toLocaleString("fr-FR")}</strong>
+    <span>publications dans le corpus</span>
+  </div>
+</section>
+`
+```
+
+::: {.section-header}
+
+## Vue générale
+
+
+:::
+
+::: {.filter-grid}
+
+::: {.filter-card}
+**ANNÉE**
+
+```{ojs}
+viewof selectedYear = Inputs.select(yearOptions, {value: "Toutes"})
+```
+:::
+
+::: {.filter-card}
+**PILIER**
+
+```{ojs}
+viewof selectedPillar = Inputs.select(pillarOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**AXE SCIENTIFIQUE**
+
+```{ojs}
+viewof selectedAxis = Inputs.select(axisOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**LABORATOIRE**
+
+```{ojs}
+viewof selectedLab = Inputs.select(labOptions, {value: "Tous"})
+```
+:::
+
+:::
+
+```{ojs}
+publicationKey = d => d.publication_id ?? d.halId_s
+
+selectedLabPublicationIds = new Set(
+  selectedLab === "Tous"
+    ? publications.map(publicationKey)
+    : publicationLabsCluster
+        .filter(d => d.lab === selectedLab)
+        .map(d => d.publication_id ?? d.halId_s)
+)
+
+filteredPublications = publications.filter(d =>
+  (selectedYear === "Toutes" || String(d.year) === selectedYear) &&
+  (selectedPillar === "Tous" || d.pillar === selectedPillar) &&
+  (selectedAxis === "Tous" || d.axis === selectedAxis) &&
+  (selectedLab === "Tous" || selectedLabPublicationIds.has(publicationKey(d)))
+)
+```
+
+```{ojs}
+totalPublications = filteredPublications.length
+
+withAxisPublications =
+  filteredPublications.filter(
+    d =>
+      d.axis &&
+      d.axis.trim() !== "" &&
+      d.pillar !== "No class"
+  ).length
+
+noClassPublications =
+  filteredPublications.filter(
+    d => d.pillar === "No class"
+  ).length
+```
+
+```{ojs}
+html`
+<section class="metrics-grid">
+
+  <article class="metric-card">
+    <div class="metric-icon">01</div>
+    <div>
+      <span class="metric-label">PUBLICATIONS</span>
+      <strong class="metric-value">
+        ${totalPublications.toLocaleString("fr-FR")}
+      </strong>
+      <span class="metric-note">dans la sélection</span>
+    </div>
+  </article>
+
+  <article class="metric-card">
+    <div class="metric-icon success">02</div>
+    <div>
+      <span class="metric-label">AVEC AXE SCIENTIFIQUE</span>
+      <strong class="metric-value">
+        ${withAxisPublications.toLocaleString("fr-FR")}
+      </strong>
+      <span class="metric-note">classification thématique renseignée</span>
+    </div>
+  </article>
+
+  <article class="metric-card">
+    <div class="metric-icon rate">03</div>
+    <div>
+      <span class="metric-label">HORS PÉRIMÈTRE</span>
+      <strong class="metric-value">
+        ${noClassPublications.toLocaleString("fr-FR")}
+      </strong>
+      <span class="metric-note">pilier final « No class »</span>
+    </div>
+  </article>
+
+</section>
+`
+```
+
+```{ojs}
+publicationsByYear = Array.from(
+  d3.rollup(
+    filteredPublications,
+    v => v.length,
+    d => String(d.year)
+  ),
+  ([year, count]) => ({year, count})
+)
+.filter(d => d.year !== "null")
+.sort((a, b) => Number(a.year) - Number(b.year))
+
+publicationsByPillar = Array.from(
+  d3.rollup(
+    filteredPublications,
+    v => v.length,
+    d => d.pillar || "Non renseigné"
+  ),
+  ([pillar, count]) => ({pillar, count})
+)
+.sort((a, b) => b.count - a.count)
+
+publicationsByAxis = Array.from(
+  d3.rollup(
+    filteredPublications.filter(
+      d =>
+        d.axis &&
+        d.axis !== "Non classifié"
+    ),
+    v => v.length,
+    d => d.axis
+  ),
+  ([axis, count]) => ({axis, count})
+)
+.sort((a, b) => b.count - a.count)
+.slice(0, 10)
+
+topCitedPublications = filteredPublications
+  .filter(
+    d =>
+      d.citations != null &&
+      d.citations !== "" &&
+      !Number.isNaN(Number(d.citations))
+  )
+  .slice()
+  .sort((a, b) => Number(b.citations) - Number(a.citations))
+  .slice(0, 10)
+
+shortAuthors = value => {
+  const authors = String(value || "")
+    .split(/\s*\|\s*|,\s*/)
+    .filter(Boolean)
+
+  if (authors.length <= 2) return authors.join(", ")
+
+  return `${authors.slice(0, 2).join(", ")} +${authors.length - 2}`
+}
+```
+
+::: {.section-header}
+
+## Activité scientifique
+
+
+:::
+
+::: {.charts-grid}
+
+::: {.chart-card}
+
+::: {.chart-heading}
+### Publications par année
+Évolution du corpus sélectionné.
+:::
+
+```{ojs}
+Plot.plot({
+  height: 245,
+  marginTop: 20,
+  marginRight: 20,
+  marginBottom: 36,
+  marginLeft: 48,
+
+  x: {
+  label: null,
+  type: "band"
+},
+
+  y: {
+    label: null,
+    grid: true
+  },
+
+  marks: [
+    Plot.barY(
+      publicationsByYear,
+      {
+        x: "year",
+        y: "count",
+        fill: "#315fcb",
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      publicationsByYear,
+      {
+        x: "year",
+        y: "count",
+        text: d => d.count,
+        dy: -8,
+        fontWeight: 700,
+        fill: "#162445"
+      }
+    ),
+
+    Plot.ruleY([0])
+  ]
+})
+```
+
+:::
+
+::: {.chart-card}
+
+::: {.chart-heading}
+### Répartition par pilier
+:::
+
+```{ojs}
+Plot.plot({
+  height: 245,
+  marginTop: 20,
+  marginRight: 42,
+  marginBottom: 32,
+  marginLeft: 155,
+
+  x: {
+    label: null,
+    grid: true
+  },
+
+  y: {label: null},
+
+  marks: [
+    Plot.barX(
+      publicationsByPillar,
+      {
+        y: "pillar",
+        x: "count",
+        fill: "#263b6e",
+        sort: {y: "-x"},
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      publicationsByPillar,
+      {
+        y: "pillar",
+        x: "count",
+        text: d => d.count,
+        dx: 7,
+        textAnchor: "start",
+        fontWeight: 700,
+        fill: "#162445"
+      }
+    )
+  ]
+})
+```
+
+:::
+
+:::
+
+::: {.section-header}
+
+## Thématiques
+
+Les principaux axes scientifiques et les publications les plus citées de la sélection.
+
+:::
+
+::: {.dashboard-grid-2}
+
+::: {.chart-card}
+
+::: {.chart-heading}
+### Principaux axes scientifiques
+Top 10 des axes dans la sélection actuelle.
+:::
+
+```{ojs}
+Plot.plot({
+  height: 390,
+  marginTop: 15,
+  marginRight: 45,
+  marginBottom: 28,
+  marginLeft: 235,
+
+  x: {
+    label: null,
+    grid: true
+  },
+
+  y: {label: null},
+
+  marks: [
+    Plot.barX(
+      publicationsByAxis,
+      {
+        y: "axis",
+        x: "count",
+        fill: "#328c8e",
+        sort: {y: "-x"},
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      publicationsByAxis,
+      {
+        y: "axis",
+        x: "count",
+        text: d => d.count,
+        dx: 7,
+        textAnchor: "start",
+        fontWeight: 700,
+        fill: "#172554"
+      }
+    )
+  ]
+})
+```
+
+:::
+
+::: {.ranking-card}
+
+::: {.ranking-heading}
+### Publications les plus citées
+Top 10 selon OpenAlex.
+:::
+
+```{ojs}
+html`
+<div class="ranking-list">
+
+  ${topCitedPublications.map((d, i) => {
+
+    const articleUrl =
+      d.url
+        ? d.url
+        : d.doi
+          ? (
+              String(d.doi).startsWith("http")
+                ? d.doi
+                : `https://doi.org/${d.doi}`
+            )
+          : null
+
+    return articleUrl
+      ? html`
+          <a
+            class="ranking-row"
+            href=${articleUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title=${d.title || "Ouvrir la publication"}
+          >
+
+            <span class="ranking-rank">
+              ${i + 1}
+            </span>
+
+            <div class="ranking-content">
+
+              <div class="ranking-title">
+                ${d.title || "Sans titre"}
+              </div>
+
+              <div class="ranking-meta">
+                ${String(d.year ?? "")}
+                ${
+                  d.authors
+                    ? ` · ${shortAuthors(d.authors)}`
+                    : ""
+                }
+              </div>
+
+            </div>
+
+            <div class="ranking-score">
+              <strong>
+                ${Number(d.citations).toLocaleString("fr-FR")}
+              </strong>
+              <span>citations</span>
+            </div>
+
+          </a>
+        `
+      : ""
+  })}
+
+</div>
+`
+
+```
+
+:::
+
+:::
+
+::: {.section-header}
+
+## Publications associées
+
+:::
+
+::: {.publication-search-card}
+
+**RECHERCHE PAR TITRE OU AUTEUR**
+
+```{ojs}
+viewof publicationSearch = Inputs.text({
+  placeholder: "Ex. transformer, Dupont, robotique..."
+})
+```
+
+:::
+
+```{ojs}
+publicationSearchQuery =
+  String(publicationSearch || "")
+    .trim()
+    .toLowerCase()
+
+displayedPublications = filteredPublications
+  .filter(
+    d =>
+      publicationSearchQuery === "" ||
+      String(d.title || "")
+        .toLowerCase()
+        .includes(publicationSearchQuery) ||
+      String(d.authors || "")
+        .toLowerCase()
+        .includes(publicationSearchQuery)
+  )
+  .slice()
+  .sort(
+    (a, b) =>
+      Number(b.year || 0) - Number(a.year || 0) ||
+      String(a.title || "").localeCompare(String(b.title || ""))
+  )
+```
+
+```{ojs}
+html`
+<div class="publication-result-summary">
+  <strong>${displayedPublications.length.toLocaleString("fr-FR")}</strong>
+  publication${displayedPublications.length > 1 ? "s" : ""}
+  correspondant à la sélection
+</div>
+`
+```
+
+::: {.publication-card}
+
+```{ojs}
+Inputs.table(
+  displayedPublications.map(d => ({
+    Année: String(d.year ?? ""),
+    Titre: d.title || "",
+    Auteurs: d.authors || "",
+    Pilier: d.pillar || "",
+    Axe: d.axis || "",
+    Citations:
+      d.citations == null || d.citations === ""
+        ? ""
+        : Number(d.citations),
+    HAL: d.url || "",
+    DOI: d.doi || ""
+  })),
+  {
+    rows: 8,
+
+    columns: [
+      "Année",
+      "Titre",
+      "Auteurs",
+      "Pilier",
+      "Axe",
+      "Citations",
+      "HAL",
+      "DOI"
+    ],
+
+    width: {
+      Année: 70,
+      Titre: 330,
+      Auteurs: 240,
+      Pilier: 145,
+      Axe: 200,
+      Citations: 85,
+      HAL: 85,
+      DOI: 85
+    },
+
+    format: {
+      Citations: value =>
+        value === "" || value == null
+          ? "—"
+          : value.toLocaleString("fr-FR"),
+
+      HAL: value =>
+        value
+          ? html`<a href=${value} target="_blank" rel="noopener noreferrer">HAL</a>`
+          : "",
+
+      DOI: value => {
+        if (!value) return ""
+
+        const doiUrl =
+          String(value).startsWith("http")
+            ? value
+            : `https://doi.org/${value}`
+
+        return html`<a href=${doiUrl} target="_blank" rel="noopener noreferrer">DOI</a>`
+      }
+    }
+  }
+)
+```
+
+:::

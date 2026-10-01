@@ -1,0 +1,587 @@
+---
+title: "Écosystème"
+page-layout: full
+execute:
+  echo: false
+  warning: false
+---
+
+```{ojs}
+API_BASE = (
+  (location.hostname === "localhost" ||
+   location.hostname === "127.0.0.1") &&
+  location.port !== "10000"
+)
+  ? "http://127.0.0.1:8000"
+  : ""
+
+apiJson = async path => {
+  const response = await fetch(`${API_BASE}${path}`)
+
+  if (!response.ok) {
+    throw new Error(
+      `API indisponible (${path}) : HTTP ${response.status}`
+    )
+  }
+
+  return await response.json()
+}
+
+dashboardPayload = await apiJson("/api/dashboard/publications")
+labsPayload = await apiJson("/api/dashboard/labs")
+partnersPayload = await apiJson("/api/dashboard/partners")
+authorsPayload = await apiJson("/api/dashboard/authors")
+
+publications = dashboardPayload.items ?? []
+publicationLabsCluster = labsPayload.items ?? []
+publicationPartners = partnersPayload.items ?? []
+publicationAuthors = authorsPayload.items ?? []
+```
+
+```{ojs}
+yearOptions = [
+  "Toutes",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.year)
+        .filter(d => d != null)
+        .map(d => String(d))
+    )
+  ).sort()
+]
+
+pillarOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.pillar)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+
+axisOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.axis)
+        .filter(
+          d =>
+            d &&
+            d.trim() !== "" &&
+            d !== "No class"
+        )
+    )
+  ).sort()
+]
+
+labOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publicationLabsCluster
+        .map(d => d.lab)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+```
+
+```{ojs}
+html`
+<section class="hero-banner">
+  <div>
+    <div class="hero-kicker">CLUSTER SEQUOIA</div>
+    <h1>Écosystème scientifique</h1>
+    <p>Laboratoires, partenaires privés et auteurs les plus actifs du corpus.</p>
+  </div>
+
+  <div class="hero-meta">
+    <strong>${publications.length.toLocaleString("fr-FR")}</strong>
+    <span>publications dans le corpus</span>
+  </div>
+</section>
+`
+```
+
+::: {.section-header}
+
+## Explorer l'écosystème
+
+
+:::
+
+::: {.filter-grid}
+
+::: {.filter-card}
+**ANNÉE**
+
+```{ojs}
+viewof selectedYear = Inputs.select(yearOptions, {value: "Toutes"})
+```
+:::
+
+::: {.filter-card}
+**PILIER**
+
+```{ojs}
+viewof selectedPillar = Inputs.select(pillarOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**AXE SCIENTIFIQUE**
+
+```{ojs}
+viewof selectedAxis = Inputs.select(axisOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**LABORATOIRE**
+
+```{ojs}
+viewof selectedLab = Inputs.select(labOptions, {value: "Tous"})
+```
+:::
+
+:::
+
+```{ojs}
+publicationKey = d => d.publication_id ?? d.halId_s
+
+selectedLabPublicationIds = new Set(
+  selectedLab === "Tous"
+    ? publications.map(publicationKey)
+    : publicationLabsCluster
+        .filter(d => d.lab === selectedLab)
+        .map(d => d.publication_id ?? d.halId_s)
+)
+
+filteredPublications = publications.filter(d =>
+  (selectedYear === "Toutes" || String(d.year) === selectedYear) &&
+  (selectedPillar === "Tous" || d.pillar === selectedPillar) &&
+  (selectedAxis === "Tous" || d.axis === selectedAxis) &&
+  (selectedLab === "Tous" || selectedLabPublicationIds.has(publicationKey(d)))
+)
+
+filteredPublicationIds = new Set(
+  filteredPublications.map(publicationKey)
+)
+```
+
+```{ojs}
+filteredLabRelations = publicationLabsCluster.filter(
+  d => filteredPublicationIds.has(d.publication_id)
+)
+
+filteredPartnerRelations = publicationPartners.filter(
+  d => filteredPublicationIds.has(d.publication_id)
+)
+
+filteredAuthorRelations = publicationAuthors.filter(
+  d => filteredPublicationIds.has(d.publication_id)
+)
+```
+
+```{ojs}
+labActivity = Array.from(
+  d3.rollup(
+    filteredLabRelations,
+    rows => new Set(rows.map(d => d.publication_id)).size,
+    d => d.lab
+  ),
+  ([lab, publications]) => ({lab, publications})
+)
+.sort((a, b) => b.publications - a.publications)
+.slice(0, 10)
+
+partnerActivity = Array.from(
+  d3.rollup(
+    filteredPartnerRelations,
+    rows => new Set(rows.map(d => d.publication_id)).size,
+    d => d.partner
+  ),
+  ([partner, publications]) => ({partner, publications})
+)
+.sort((a, b) => b.publications - a.publications)
+.slice(0, 10)
+
+authorActivity = Array.from(
+  d3.rollup(
+    filteredAuthorRelations,
+    rows => new Set(rows.map(d => d.publication_id)).size,
+    d => d.author
+  ),
+  ([author, publications]) => ({author, publications})
+)
+.sort((a, b) => b.publications - a.publications)
+.slice(0, 10)
+
+activeLabs = new Set(
+  filteredLabRelations.map(d => d.lab)
+).size
+
+activePartners = new Set(
+  filteredPartnerRelations.map(d => d.partner)
+).size
+
+activeAuthors = new Set(
+  filteredAuthorRelations.map(d => d.author)
+).size
+
+shortLabel = (value, max = 27) => {
+  const text = String(value || "")
+  return text.length > max
+    ? `${text.slice(0, max - 1)}…`
+    : text
+}
+```
+
+```{ojs}
+html`
+<section class="ecosystem-summary">
+
+  <article class="ecosystem-stat">
+    <span class="metric-label">LABORATOIRES</span>
+    <strong class="metric-value">
+      ${activeLabs.toLocaleString("fr-FR")}
+    </strong>
+    <span class="metric-note">représentés dans la sélection</span>
+  </article>
+
+  <article class="ecosystem-stat">
+    <span class="metric-label">PARTENAIRES PRIVÉS</span>
+    <strong class="metric-value">
+      ${activePartners.toLocaleString("fr-FR")}
+    </strong>
+    <span class="metric-note">associés aux publications</span>
+  </article>
+
+  <article class="ecosystem-stat">
+    <span class="metric-label">AUTEURS</span>
+    <strong class="metric-value">
+      ${activeAuthors.toLocaleString("fr-FR")}
+    </strong>
+    <span class="metric-note">présents dans la sélection</span>
+  </article>
+
+</section>
+`
+```
+
+::: {.section-header}
+
+## Structures & partenaires
+
+Top 10 des structures les plus présentes dans la sélection.
+
+:::
+
+::: {.charts-grid}
+
+::: {.chart-card}
+
+::: {.chart-heading}
+### Laboratoires les plus actifs
+Nombre de publications associées.
+:::
+
+```{ojs}
+Plot.plot({
+  height: 285,
+  marginTop: 15,
+  marginRight: 45,
+  marginBottom: 28,
+  marginLeft: 125,
+
+  x: {
+    label: null,
+    grid: true
+  },
+
+  y: {
+    label: null,
+    tickFormat: d => shortLabel(d, 22)
+  },
+
+  marks: [
+    Plot.barX(
+      labActivity,
+      {
+        y: "lab",
+        x: "publications",
+        sort: {y: "-x"},
+        fill: "#4fae87",
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      labActivity,
+      {
+        y: "lab",
+        x: "publications",
+        text: d => d.publications,
+        dx: 7,
+        textAnchor: "start",
+        fontWeight: 700,
+        fill: "#172554"
+      }
+    )
+  ]
+})
+```
+
+:::
+
+::: {.chart-card}
+
+::: {.chart-heading}
+### Partenaires privés les plus actifs
+Nombre de publications associées.
+:::
+
+```{ojs}
+Plot.plot({
+  height: 285,
+  marginTop: 15,
+  marginRight: 45,
+  marginBottom: 28,
+  marginLeft: 145,
+
+  x: {
+    label: null,
+    grid: true
+  },
+
+  y: {
+    label: null,
+    tickFormat: d => shortLabel(d, 25)
+  },
+
+  marks: [
+    Plot.barX(
+      partnerActivity,
+      {
+        y: "partner",
+        x: "publications",
+        sort: {y: "-x"},
+        fill: "#d07a3d",
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      partnerActivity,
+      {
+        y: "partner",
+        x: "publications",
+        text: d => d.publications,
+        dx: 7,
+        textAnchor: "start",
+        fontWeight: 700,
+        fill: "#172554"
+      }
+    )
+  ]
+})
+```
+
+:::
+
+:::
+
+::: {.section-header}
+
+## Auteurs les plus actifs
+
+Top 10 des auteurs de la sélection actuelle.
+
+:::
+
+::: {.chart-card .axis-card}
+
+```{ojs}
+Plot.plot({
+  height: 315,
+  marginTop: 15,
+  marginRight: 45,
+  marginBottom: 28,
+  marginLeft: 180,
+
+  x: {
+    label: null,
+    grid: true
+  },
+
+  y: {
+    label: null,
+    tickFormat: d => shortLabel(d, 30)
+  },
+
+  marks: [
+    Plot.barX(
+      authorActivity,
+      {
+        y: "author",
+        x: "publications",
+        sort: {y: "-x"},
+        fill: "#315fcb",
+        rx: 5,
+        tip: true
+      }
+    ),
+
+    Plot.text(
+      authorActivity,
+      {
+        y: "author",
+        x: "publications",
+        text: d => d.publications,
+        dx: 7,
+        textAnchor: "start",
+        fontWeight: 700,
+        fill: "#172554"
+      }
+    )
+  ]
+})
+```
+
+:::
+
+::: {.section-header}
+
+## Publications associées
+
+
+:::
+
+::: {.publication-search-card}
+
+**RECHERCHE PAR TITRE OU AUTEUR**
+
+```{ojs}
+viewof publicationSearch = Inputs.text({
+  placeholder: "Ex. transformer, Dupont, robotique..."
+})
+```
+
+:::
+
+```{ojs}
+publicationSearchQuery =
+  String(publicationSearch || "")
+    .trim()
+    .toLowerCase()
+
+displayedPublications = filteredPublications
+  .filter(
+    d =>
+      publicationSearchQuery === "" ||
+      String(d.title || "")
+        .toLowerCase()
+        .includes(publicationSearchQuery) ||
+      String(d.authors || "")
+        .toLowerCase()
+        .includes(publicationSearchQuery)
+  )
+  .slice()
+  .sort(
+    (a, b) =>
+      Number(b.year || 0) - Number(a.year || 0) ||
+      String(a.title || "").localeCompare(String(b.title || ""))
+  )
+```
+
+```{ojs}
+html`
+<div class="publication-result-summary">
+  <strong>${displayedPublications.length.toLocaleString("fr-FR")}</strong>
+  publication${displayedPublications.length > 1 ? "s" : ""}
+  correspondant à la sélection
+</div>
+`
+```
+
+::: {.publication-card}
+
+```{ojs}
+Inputs.table(
+  displayedPublications.map(d => ({
+    Année: String(d.year ?? ""),
+    Titre: d.title || "",
+    Auteurs: d.authors || "",
+    Pilier: d.pillar || "",
+    Axe: d.axis || "",
+    Statut:
+      d.classification_status === "to_review"
+        ? "À confirmer"
+        : "Validé",
+    Citations:
+      d.citations == null || d.citations === ""
+        ? ""
+        : Number(d.citations),
+    HAL: d.url || "",
+    DOI: d.doi || ""
+  })),
+  {
+    rows: 8,
+
+    columns: [
+      "Année",
+      "Titre",
+      "Auteurs",
+      "Pilier",
+      "Axe",
+      "Statut",
+      "Citations",
+      "HAL",
+      "DOI"
+    ],
+
+    width: {
+      Année: 70,
+      Titre: 330,
+      Auteurs: 240,
+      Pilier: 145,
+      Axe: 200,
+      Statut: 105,
+      Citations: 85,
+      HAL: 85,
+      DOI: 85
+    },
+
+    format: {
+      Citations: value =>
+        value === "" || value == null
+          ? "—"
+          : value.toLocaleString("fr-FR"),
+
+      HAL: value =>
+        value
+          ? html`<a href=${value} target="_blank" rel="noopener noreferrer">HAL</a>`
+          : "",
+
+      DOI: value => {
+        if (!value) return ""
+
+        const doiUrl =
+          String(value).startsWith("http")
+            ? value
+            : `https://doi.org/${value}`
+
+        return html`<a href=${doiUrl} target="_blank" rel="noopener noreferrer">DOI</a>`
+      }
+    }
+  }
+)
+```
+
+:::

@@ -1,0 +1,361 @@
+---
+title: "Publications"
+page-layout: full
+execute:
+  echo: false
+  warning: false
+---
+
+```{ojs}
+API_BASE = (
+  (location.hostname === "localhost" ||
+   location.hostname === "127.0.0.1") &&
+  location.port !== "10000"
+)
+  ? "http://127.0.0.1:8000"
+  : ""
+
+apiJson = async path => {
+  const response = await fetch(`${API_BASE}${path}`)
+
+  if (!response.ok) {
+    throw new Error(
+      `API indisponible (${path}) : HTTP ${response.status}`
+    )
+  }
+
+  return await response.json()
+}
+
+dashboardPayload = await apiJson("/api/dashboard/publications")
+labsPayload = await apiJson("/api/dashboard/labs")
+
+publications = dashboardPayload.items ?? []
+publicationLabsCluster = labsPayload.items ?? []
+```
+
+```{ojs}
+yearOptions = [
+  "Toutes",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.year)
+        .filter(d => d != null)
+        .map(d => String(d))
+    )
+  ).sort()
+]
+
+pillarOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.pillar)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+
+axisOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publications
+        .map(d => d.axis)
+        .filter(
+          d =>
+            d &&
+            d.trim() !== "" &&
+            d !== "No class"
+        )
+    )
+  ).sort()
+]
+
+labOptions = [
+  "Tous",
+  ...Array.from(
+    new Set(
+      publicationLabsCluster
+        .map(d => d.lab)
+        .filter(d => d && d.trim() !== "")
+    )
+  ).sort()
+]
+```
+
+```{ojs}
+html`
+<section class="hero-banner publications-hero">
+  <div>
+    <div class="hero-kicker">CLUSTER SEQUOIA</div>
+    <h1>Publications</h1>
+    <p>Rechercher, filtrer et consulter les publications scientifiques du corpus.</p>
+  </div>
+
+  <div class="hero-meta">
+    <strong>${publications.length.toLocaleString("fr-FR")}</strong>
+    <span>publications disponibles</span>
+  </div>
+</section>
+`
+```
+
+::: {.section-header}
+
+## Rechercher dans le corpus
+
+:::
+
+::: {.publication-filter-grid}
+
+::: {.filter-card .search-filter}
+**RECHERCHE**
+
+```{ojs}
+viewof searchText = Inputs.text({
+  placeholder: "Titre ou auteur…"
+})
+```
+:::
+
+::: {.filter-card}
+**ANNÉE**
+
+```{ojs}
+viewof selectedYear = Inputs.select(yearOptions, {value: "Toutes"})
+```
+:::
+
+::: {.filter-card}
+**PILIER**
+
+```{ojs}
+viewof selectedPillar = Inputs.select(pillarOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**AXE SCIENTIFIQUE**
+
+```{ojs}
+viewof selectedAxis = Inputs.select(axisOptions, {value: "Tous"})
+```
+:::
+
+::: {.filter-card}
+**LABORATOIRE**
+
+```{ojs}
+viewof selectedLab = Inputs.select(labOptions, {value: "Tous"})
+```
+:::
+
+:::
+
+```{ojs}
+publicationKey = d => d.publication_id ?? d.halId_s
+
+selectedLabPublicationIds = new Set(
+  selectedLab === "Tous"
+    ? publications.map(publicationKey)
+    : publicationLabsCluster
+        .filter(d => d.lab === selectedLab)
+        .map(d => d.publication_id ?? d.halId_s)
+)
+
+filteredPublications = publications.filter(d => {
+  const query =
+    String(searchText || "")
+      .trim()
+      .toLowerCase()
+
+  const title =
+    String(d.title || "")
+      .toLowerCase()
+
+  const authors =
+    String(d.authors || "")
+      .toLowerCase()
+
+  const searchMatch =
+    query === "" ||
+    title.includes(query) ||
+    authors.includes(query)
+
+  const yearMatch =
+    selectedYear === "Toutes" ||
+    String(d.year) === selectedYear
+
+  const pillarMatch =
+    selectedPillar === "Tous" ||
+    d.pillar === selectedPillar
+
+  const axisMatch =
+    selectedAxis === "Tous" ||
+    d.axis === selectedAxis
+
+  const labMatch =
+    selectedLab === "Tous" ||
+    selectedLabPublicationIds.has(publicationKey(d))
+
+  return (
+    searchMatch &&
+    yearMatch &&
+    pillarMatch &&
+    axisMatch &&
+    labMatch
+  )
+})
+
+displayedPublications = filteredPublications
+  .slice()
+  .sort(
+    (a, b) =>
+      Number(b.year || 0) - Number(a.year || 0) ||
+      String(a.title || "").localeCompare(String(b.title || ""))
+  )
+
+publicationsWithCitations =
+  filteredPublications.filter(
+    d =>
+      d.citations != null &&
+      d.citations !== "" &&
+      !Number.isNaN(Number(d.citations))
+  ).length
+
+totalCitations =
+  filteredPublications.reduce(
+    (sum, d) =>
+      sum +
+      (
+        d.citations == null ||
+        d.citations === "" ||
+        Number.isNaN(Number(d.citations))
+          ? 0
+          : Number(d.citations)
+      ),
+    0
+  )
+```
+
+```{ojs}
+html`
+<div class="result-toolbar">
+
+  <div class="result-stat">
+    <strong>${filteredPublications.length.toLocaleString("fr-FR")}</strong>
+    <span>publications trouvées</span>
+  </div>
+
+  <div class="result-stat">
+    <strong>${publicationsWithCitations.toLocaleString("fr-FR")}</strong>
+    <span>avec données de citation</span>
+  </div>
+
+  <div class="result-stat">
+    <strong>${totalCitations.toLocaleString("fr-FR")}</strong>
+    <span>citations cumulées</span>
+  </div>
+
+</div>
+`
+```
+
+::: {.publication-card}
+
+::: {.publication-heading}
+
+### Résultats
+
+Triés par année décroissante. Cliquez sur les en-têtes du tableau pour explorer les colonnes.
+
+:::
+
+```{ojs}
+Inputs.table(
+  displayedPublications.map(d => ({
+    Année: String(d.year ?? ""),
+    Titre: d.title || "",
+    Auteurs: d.authors || "",
+    Type: d.doc_type || "",
+    Pilier: d.pillar || "",
+    Axe: d.axis || "",
+    Statut:
+      d.classification_status === "to_review"
+        ? "À confirmer"
+        : "Validé",
+    Citations:
+      d.citations == null ||
+      d.citations === ""
+        ? ""
+        : Number(d.citations),
+    HAL: d.url || "",
+    DOI: d.doi || ""
+  })),
+  {
+    rows: 12,
+
+    columns: [
+      "Année",
+      "Titre",
+      "Auteurs",
+      "Type",
+      "Pilier",
+      "Axe",
+      "Statut",
+      "Citations",
+      "HAL",
+      "DOI"
+    ],
+
+    width: {
+      Année: 70,
+      Titre: 340,
+      Auteurs: 230,
+      Type: 95,
+      Pilier: 145,
+      Axe: 195,
+      Statut: 105,
+      Citations: 85,
+      HAL: 80,
+      DOI: 80
+    },
+
+    format: {
+      Citations: value =>
+        value === "" || value == null
+          ? "—"
+          : value.toLocaleString("fr-FR"),
+
+      HAL: value =>
+        value
+          ? html`<a
+              href=${value}
+              target="_blank"
+              rel="noopener noreferrer"
+            >HAL</a>`
+          : "",
+
+      DOI: value => {
+        if (!value) return ""
+
+        const doiUrl =
+          String(value).startsWith("http")
+            ? value
+            : `https://doi.org/${value}`
+
+        return html`<a
+          href=${doiUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >DOI</a>`
+      }
+    }
+  }
+)
+```
+
+:::
