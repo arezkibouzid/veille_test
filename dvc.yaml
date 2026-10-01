@@ -1,4 +1,12 @@
 stages:
+
+  snapshot_db:
+    cmd: python dashboard/scripts/snapshot_db.py
+    deps:
+      - dashboard/scripts/snapshot_db.py
+    outs:
+      - dashboard/data/snapshots/sequoia_v2_snapshot.db
+      
   preprocess:
     cmd: python -m src.preprocess
     deps:
@@ -28,3 +36,4 @@ stages:
     metrics:
       - mpnet_sgd_artifacts/best_metric.json:
           cache: false
+    
