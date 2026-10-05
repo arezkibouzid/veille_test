@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import joblib
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -25,7 +24,6 @@ except ImportError:  # exécution directe du script
     from db import connect_db, database_path, ensure_schema
 
 ROOT = Path(__file__).resolve().parents[2]
-SUBAXIS_REFERENCES = ROOT / "dashboard" / "mpnet_sgd_artifacts" / "subaxis_references.joblib"
 SITE_DIR = ROOT / "dashboard" / "_site"
 
 PILLARS = [
@@ -37,26 +35,12 @@ PILLARS = [
 
 
 def load_axes_by_pillar() -> dict[str, list[str]]:
-    result = {pillar: [] for pillar in PILLARS}
-    if not SUBAXIS_REFERENCES.exists():
-        return result
-
-    references = joblib.load(SUBAXIS_REFERENCES)
-    for pillar in PILLARS:
-        if pillar == "No class":
-            continue
-        reference = references.get(pillar)
-        if reference is None:
-            continue
-        result[pillar] = [
-            str(name).strip()
-            for name in reference.get("names", [])
-            if str(name).strip()
-        ]
-    return result
+    from config.config import SEQUOIA_SAXES
+    return {pillar: list(SEQUOIA_SAXES.get(pillar, {})) for pillar in PILLARS}
 
 
 AXES_BY_PILLAR = load_axes_by_pillar()
+
 
 app = FastAPI(title="SequoIA Validation API", version="5.0.0")
 app.add_middleware(
@@ -111,7 +95,13 @@ def row_to_dict(row) -> dict | None:
 
 
 def rows_to_dicts(rows) -> list[dict]:
-    return [dict(row) for row in rows]
+    from config.config import PILLAR_MAP
+    items = [dict(row) for row in rows]
+    for item in items:
+        for key in ('pillar', 'final_pillar', 'predicted_pillar', 'validated_pillar'):
+            if item.get(key):
+                item[key] = PILLAR_MAP.get(str(item[key]).strip().lower(), item[key])
+    return items
 
 
 def normalize_axis(pillar: str, axis: str | None) -> str | None:
@@ -158,20 +148,20 @@ def public_article_sql() -> str:
             a.openalex_match_method AS match_method,
             a.openalex_match_status AS match_status,
             a.openalex_match_score AS match_score,
-            a.citations,
-            a.openalex_updated_at AS refreshed_at,
+            CASE WHEN a.openalex_match_status='matched' THEN a.citations END AS citations,
+            CASE WHEN a.openalex_match_status='matched' THEN a.openalex_updated_at END AS refreshed_at,
             a.predicted_pillar,
             a.pillar_confidence,
             a.predicted_axis,
             a.axis_similarity,
             a.model_version,
-            COALESCE(v.validated_pillar, a.manual_pillar, a.predicted_pillar) AS pillar,
+            COALESCE(v.validated_pillar, a.predicted_pillar) AS pillar,
             CASE
-                WHEN COALESCE(v.validated_pillar, a.manual_pillar, a.predicted_pillar) = 'No class'
+                WHEN COALESCE(v.validated_pillar, a.predicted_pillar) = 'No class'
                     THEN 'No class'
                 ELSE COALESCE(v.validated_axis, a.predicted_axis, '')
             END AS axis,
-            COALESCE(v.validated_pillar, a.manual_pillar, a.predicted_pillar) AS final_pillar,
+            COALESCE(v.validated_pillar, a.predicted_pillar) AS final_pillar,
             CASE
                 WHEN v.validation_source = 'historical_import' THEN 'human_historical'
                 WHEN v.hal_id IS NOT NULL THEN 'human_validated'
@@ -244,8 +234,8 @@ def validation_stats(_admin: str = Depends(require_admin)):
         validated_workflow = con.execute(
             """
             SELECT COUNT(*)
-            FROM validations
-            WHERE validation_source != 'historical_import'
+            FROM validations v JOIN articles a ON a.hal_id=v.hal_id
+            WHERE validation_source != 'historical_import' AND a.status='validated'
             """
         ).fetchone()[0]
 
@@ -302,7 +292,8 @@ def articles_to_review(
                 pillar_confidence,
                 predicted_axis,
                 axis_similarity,
-                status AS validation_status
+                status AS validation_status,
+                EXISTS(SELECT 1 FROM validations v WHERE v.hal_id=articles.hal_id) AS has_validation
             FROM articles
             WHERE {where_sql}
             ORDER BY {order_sql}
@@ -351,10 +342,11 @@ def validate_article(
 ):
     pillar = payload.validated_pillar.strip()
     axis = normalize_axis(pillar, payload.validated_axis)
-    reviewer = payload.reviewer.strip() if payload.reviewer else None
+    reviewer = payload.reviewer.strip() if payload.reviewer else _admin
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     with connect_db() as con:
+        con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
             "SELECT status FROM articles WHERE hal_id = ?",
             (hal_id,),
@@ -362,18 +354,17 @@ def validate_article(
         if existing is None:
             raise HTTPException(status_code=404, detail="Article introuvable.")
 
+        if existing["status"] != "to_review":
+            raise HTTPException(status_code=409, detail="Article déjà validé ou non prêt pour validation.")
+        if con.execute("SELECT 1 FROM validations WHERE hal_id=?", (hal_id,)).fetchone():
+            raise HTTPException(status_code=409, detail="Validation existante conservée ; utiliser une correction explicite.")
+
         con.execute(
             """
             INSERT INTO validations (
                 hal_id, validated_pillar, validated_axis,
                 reviewer, validated_at, validation_source
             ) VALUES (?, ?, ?, ?, ?, 'dashboard')
-            ON CONFLICT(hal_id) DO UPDATE SET
-                validated_pillar = excluded.validated_pillar,
-                validated_axis = excluded.validated_axis,
-                reviewer = excluded.reviewer,
-                validated_at = excluded.validated_at,
-                validation_source = 'dashboard'
             """,
             (hal_id, pillar, axis, reviewer, now),
         )
@@ -413,6 +404,7 @@ def reopen_article(
     _admin: str = Depends(require_admin),
 ):
     with connect_db() as con:
+        con.execute("BEGIN IMMEDIATE")
         validation = con.execute(
             "SELECT validation_source FROM validations WHERE hal_id = ?",
             (hal_id,),
@@ -427,13 +419,87 @@ def reopen_article(
                 detail="Une annotation historique ne peut pas être rouverte depuis cette page.",
             )
 
-        con.execute("DELETE FROM validations WHERE hal_id = ?", (hal_id,))
+        # Reopening changes queue membership, never deletes the human label.
+        con.execute("INSERT INTO validation_history(hal_id,validated_pillar,validated_axis,reviewer,validated_at,validation_source,action) "
+                    "SELECT hal_id,validated_pillar,validated_axis,reviewer,validated_at,validation_source,'reopened' "
+                    "FROM validations WHERE hal_id=?", (hal_id,))
         con.execute(
             "UPDATE articles SET status='to_review', updated_at=CURRENT_TIMESTAMP WHERE hal_id=?",
             (hal_id,),
         )
 
     return {"ok": True, "halId_s": hal_id, "validation_status": "to_review"}
+
+
+@app.post("/api/articles/{hal_id}/correct")
+def correct_article(hal_id: str, payload: ValidationPayload,
+                    _admin: str = Depends(require_admin)):
+    pillar = payload.validated_pillar.strip()
+    axis = normalize_axis(pillar, payload.validated_axis)
+    with connect_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        current = con.execute("SELECT a.status FROM articles a JOIN validations v ON v.hal_id=a.hal_id WHERE a.hal_id=?", (hal_id,)).fetchone()
+        if current is None or current["status"] != "to_review":
+            raise HTTPException(status_code=409, detail="Rouvrir l’article avant de corriger sa validation.")
+        con.execute("UPDATE validations SET validated_pillar=?, validated_axis=?, reviewer=?, validated_at=?, validation_source='dashboard' WHERE hal_id=?",
+                    (pillar, axis, payload.reviewer or _admin, datetime.now(timezone.utc).isoformat(timespec="seconds"), hal_id))
+        con.execute("UPDATE articles SET status='validated', updated_at=CURRENT_TIMESTAMP WHERE hal_id=?", (hal_id,))
+    return {"ok": True, "halId_s": hal_id}
+
+
+@app.get("/api/pipelines/latest")
+def pipeline_latest(_admin: str = Depends(require_admin)):
+    from dashboard.scripts.pipeline_jobs import latest_job, enabled
+    return {"enabled": enabled(), "job": latest_job()}
+
+
+@app.get("/api/pipelines/jobs/{job_id}")
+def pipeline_status(job_id: str, _admin: str = Depends(require_admin)):
+    from dashboard.scripts.pipeline_jobs import get_job
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Traitement introuvable.")
+    return job
+
+
+def public_citation_job(job):
+    if not job or job['kind'] != 'citations':
+        return None
+    return {key: job[key] for key in ('id', 'kind', 'status', 'step', 'result', 'error')}
+
+
+@app.get("/api/citations/latest")
+def citation_latest():
+    from dashboard.scripts.pipeline_jobs import latest_job, enabled
+    job = latest_job()
+    return {'enabled': enabled(), 'busy': bool(job and job['status'] == 'running'),
+            'job': public_citation_job(job)}
+
+
+@app.get("/api/citations/jobs/{job_id}")
+def citation_job(job_id: str):
+    from dashboard.scripts.pipeline_jobs import get_job
+    job = public_citation_job(get_job(job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail='Traitement de citations introuvable.')
+    return job
+
+
+@app.post("/api/pipelines/citations", status_code=202)
+def citation_start():
+    return pipeline_start('citations', 'dashboard-public')
+
+
+@app.post("/api/pipelines/{kind}", status_code=202)
+def pipeline_start(kind: Literal["predict", "retrain"], _admin: str = Depends(require_admin)):
+    from dashboard.scripts.pipeline_jobs import enabled, start_job, PipelineBusy
+    if not enabled():
+        raise HTTPException(status_code=403, detail="Traitements désactivés : configurer SEQUOIA_ENABLE_PIPELINE_JOBS=1 dans l’environnement de test.")
+    try:
+        job_id = start_job(kind, _admin)
+    except PipelineBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
 
 
 @app.get("/api/articles/validated/list")
@@ -461,6 +527,17 @@ def dashboard_publications():
     with connect_db(readonly=True) as con:
         rows = con.execute(public_article_sql() + " ORDER BY a.year DESC, a.hal_id").fetchall()
     return {"count": len(rows), "items": rows_to_dicts(rows)}
+
+
+@app.get("/api/dashboard/citations-status")
+def citations_status():
+    with connect_db(readonly=True) as con:
+        row = con.execute("SELECT MAX(openalex_updated_at) AS last_updated_at, "
+            "MIN(openalex_updated_at) AS oldest_updated_at, COUNT(*) AS eligible, "
+            "COUNT(openalex_updated_at) AS refreshed, "
+            "SUM(CASE WHEN TRIM(COALESCE(openalex_id,'')) != '' THEN 1 ELSE 0 END) AS with_id "
+            "FROM articles WHERE status='validated'").fetchone()
+    return dict(row)
 
 
 def relation_payload(table: str, value_column: str) -> dict:

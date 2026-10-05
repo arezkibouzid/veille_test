@@ -1,4 +1,5 @@
 import time
+import os
 import json
 import hashlib
 import numpy as np
@@ -7,14 +8,18 @@ from sentence_transformers import SentenceTransformer
 from config.config import ENCODER_PATH, MODEL_NAME, EMBEDDING_CACHE_PATH
 
 def load_encoder():
+    ENCODER_PATH.parent.mkdir(parents=True, exist_ok=True)
     if ENCODER_PATH.exists():
-        return SentenceTransformer(str(Path.cwd() / ENCODER_PATH), local_files_only=True)
+        return SentenceTransformer(str(ENCODER_PATH), local_files_only=True)
     encoder = SentenceTransformer(MODEL_NAME)
     encoder.save(str(ENCODER_PATH))
     return encoder
 
 def get_or_compute_embeddings(encoder, train_df, test_df):
     embedding_started = time.perf_counter()
+    batch_size = int(os.getenv("SEQUOIA_ENCODING_BATCH_SIZE", "8"))
+    if batch_size < 1:
+        raise ValueError("SEQUOIA_ENCODING_BATCH_SIZE doit être positif.")
     train_texts = train_df['text_for_classification'].tolist()
     test_texts = test_df['text_for_classification'].tolist()
 
@@ -38,8 +43,8 @@ def get_or_compute_embeddings(encoder, train_df, test_df):
 
     if not cache_hit:
         print("🔄 Cache miss. Computing embeddings...")
-        train_embeddings = encoder.encode(train_texts, normalize_embeddings=True, show_progress_bar=True)
-        test_embeddings = encoder.encode(test_texts, normalize_embeddings=True, show_progress_bar=True)
+        train_embeddings = encoder.encode(train_texts, normalize_embeddings=True, show_progress_bar=True, batch_size=batch_size)
+        test_embeddings = encoder.encode(test_texts, normalize_embeddings=True, show_progress_bar=True, batch_size=batch_size)
         np.savez_compressed(
             EMBEDDING_CACHE_PATH,
             train_embeddings=train_embeddings,

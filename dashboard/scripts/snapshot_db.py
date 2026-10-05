@@ -1,112 +1,60 @@
-"""Crée un snapshot cohérent de la base SQLite SequoIA.
-
-Variables d'environnement :
-- SQLITE_DB_PATH : chemin de la base source
-- SQLITE_SNAPSHOT_PATH : chemin du snapshot de sortie (optionnel)
-"""
-
+"""Create a consistent SQLite backup and atomically publish it."""
 from __future__ import annotations
 
+import argparse
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
+try:
+    from .db import database_path
+except ImportError:
+    from db import database_path
 
 ROOT = Path(__file__).resolve().parents[2]
-
-DEFAULT_SOURCE = (
-    ROOT
-    / "dashboard"
-    / "data"
-    / "validation"
-    / "sequoia_v2.db"
-)
-
-DEFAULT_SNAPSHOT = (
-    ROOT
-    / "dashboard"
-    / "data"
-    / "snapshots"
-    / "sequoia_v2_snapshot.db"
-)
+DEFAULT_SNAPSHOT = ROOT / 'dashboard/data/snapshots/sequoia_v2_snapshot.db'
 
 
-def source_path() -> Path:
-    raw = os.getenv("SQLITE_DB_PATH", "").strip()
-    return Path(raw).expanduser() if raw else DEFAULT_SOURCE
+def snapshot_path():
+    return Path(os.getenv('SQLITE_SNAPSHOT_PATH') or DEFAULT_SNAPSHOT).expanduser()
 
 
-def snapshot_path() -> Path:
-    raw = os.getenv("SQLITE_SNAPSHOT_PATH", "").strip()
-    return Path(raw).expanduser() if raw else DEFAULT_SNAPSHOT
-
-
-def create_snapshot(source: Path, destination: Path) -> None:
-    if not source.exists():
-        raise FileNotFoundError(
-            f"Base SQLite source introuvable : {source}"
-        )
-
-    destination.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    if destination.exists():
-        destination.unlink()
-
-    source_connection = sqlite3.connect(
-        f"file:{source}?mode=ro",
-        uri=True,
-        timeout=30,
-    )
-
-    destination_connection = sqlite3.connect(
-        destination,
-        timeout=30,
-    )
-
+def create_snapshot(source: Path, destination: Path):
+    source = source.expanduser().resolve()
+    destination = destination.expanduser().resolve()
+    if source == destination or (source.exists() and destination.exists() and os.path.samefile(source, destination)):
+        raise ValueError('Le snapshot ne peut pas remplacer la base vivante.')
+    if not source.is_file():
+        raise FileNotFoundError(f'Base SQLite source introuvable : {source}')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix='.snapshot-', suffix='.db', dir=destination.parent, delete=False) as temp:
+        temporary = Path(temp.name)
+    src = sqlite3.connect(f'{source.as_uri()}?mode=ro', uri=True, timeout=30)
+    dst = sqlite3.connect(temporary, timeout=30)
     try:
-        source_connection.execute(
-            "PRAGMA busy_timeout = 30000"
-        )
-
-        source_connection.backup(
-            destination_connection
-        )
-
-        result = destination_connection.execute(
-            "PRAGMA integrity_check"
-        ).fetchone()
-
-        if not result or result[0] != "ok":
-            raise RuntimeError(
-                f"Échec integrity_check : {result}"
-            )
-
-        destination_connection.commit()
-
+        src.backup(dst)
+        result = dst.execute('PRAGMA integrity_check').fetchone()
+        if not result or result[0] != 'ok':
+            raise RuntimeError(f'Échec integrity_check : {result}')
+        if dst.execute('PRAGMA foreign_key_check').fetchone() is not None:
+            raise RuntimeError('Le snapshot contient des relations invalides.')
+        dst.commit()
     finally:
-        destination_connection.close()
-        source_connection.close()
+        dst.close()
+        src.close()
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, destination)
+    return destination
 
 
-def main() -> None:
-    source = source_path()
-    destination = snapshot_path()
-
-    create_snapshot(
-        source,
-        destination,
-    )
-
-    size_mb = destination.stat().st_size / (1024 * 1024)
-
-    print(f"Source   : {source}")
-    print(f"Snapshot : {destination}")
-    print(f"Taille   : {size_mb:.2f} MB")
-    print("Integrity check : ok")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    print(create_snapshot(database_path(), args.output or snapshot_path()))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

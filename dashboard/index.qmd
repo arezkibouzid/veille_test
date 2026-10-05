@@ -6,14 +6,9 @@ execute:
   warning: false
 ---
 
+
 ```{ojs}
-API_BASE = (
-  (location.hostname === "localhost" ||
-   location.hostname === "127.0.0.1") &&
-  location.port !== "10000"
-)
-  ? "http://127.0.0.1:8000"
-  : ""
+API_BASE = window.SEQUOIA_API_BASE || ""
 
 apiJson = async path => {
   const response = await fetch(`${API_BASE}${path}`)
@@ -102,6 +97,8 @@ html`
 </section>
 `
 ```
+
+
 
 ::: {.section-header}
 
@@ -466,10 +463,82 @@ Plot.plot({
 
 ::: {.ranking-card}
 
-::: {.ranking-heading}
-### Publications les plus citées
-Top 10 selon OpenAlex.
-:::
+```{=html}
+<div class="ranking-heading citations-heading">
+  <div class="citations-heading-row">
+    <div>
+      <h3>Publications les plus citées</h3>
+      <p class="citations-subtitle">Top 10 selon OpenAlex.</p>
+    </div>
+    <button id="refresh-citations" class="citations-refresh-button" disabled title="Actualiser les citations de toutes les publications validées"><span aria-hidden="true">↻</span> Actualiser</button>
+  </div>
+  <p id="citations-date" role="status">Chargement des dates…</p>
+  <p id="citations-progress" role="status" aria-live="polite"></p>
+</div>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const base = window.SEQUOIA_API_BASE || "";
+  const button = document.getElementById("refresh-citations");
+  const message = document.getElementById("citations-progress");
+  const date = document.getElementById("citations-date");
+  let enabled = false;
+  async function api(path, options = {}) {
+    const response = await fetch(base + path, options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    return data;
+  }
+  async function dates() {
+    const data = await api("/api/dashboard/citations-status");
+    date.textContent = data.last_updated_at
+      ? `Dernière actualisation : ${new Date(data.last_updated_at).toLocaleString("fr-FR")}`
+      : "Aucune mise à jour des citations enregistrée.";
+  }
+  async function poll(id) {
+    try {
+      const job = await api(`/api/citations/jobs/${encodeURIComponent(id)}`);
+      message.textContent = job.step || "Traitement en cours…";
+      if (job.status === "running") { setTimeout(() => poll(id), 2000); return; }
+      button.disabled = !enabled;
+      await dates();
+      if (job.status === "failed") {
+        message.textContent = `Échec : ${job.error}. Les mises à jour réussies sont conservées. Rechargez la page pour actualiser les chiffres affichés.`;
+      } else if (job.kind === "citations") {
+        const r = job.result || {};
+        sessionStorage.setItem("sequoia-citations-result", `${r.updated || 0} articles actualisés ; ${r.requested_ids || 0} identifiants interrogés ; ${r.not_found || 0} articles sans résultat ; ${r.searched_missing_ids || 0} recherches pour identifiants absents ; ${r.unresolved || 0} articles encore sans identifiant.`);
+        location.reload();
+      } else message.textContent = "Traitement terminé. Vous pouvez rafraîchir les citations.";
+    } catch (error) {
+      message.textContent = `Suivi indisponible : ${error.message}. Nouvelle tentative…`;
+      setTimeout(() => poll(id), 5000);
+    }
+  }
+  async function restore() {
+    const data = await api("/api/citations/latest");
+    enabled = data.enabled;
+    button.disabled = !enabled || data.busy;
+    if (data.job?.status === "running") poll(data.job.id);
+    else if (data.busy) { message.textContent = "Un traitement est déjà en cours…"; setTimeout(restore, 5000); }
+    else if (!enabled) message.textContent = "Rafraîchissement désactivé dans cet environnement.";
+  }
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const data = await api("/api/pipelines/citations", {method: "POST"});
+      poll(data.job_id);
+    } catch (error) {
+      message.textContent = error.message;
+      try { await restore(); } catch (_) { button.disabled = false; }
+    }
+  });
+  const result = sessionStorage.getItem("sequoia-citations-result");
+  if (result) { message.textContent = result; sessionStorage.removeItem("sequoia-citations-result"); }
+  dates().catch(error => { date.textContent = error.message; });
+  restore().catch(error => { message.textContent = `Suivi indisponible : ${error.message}`; });
+});
+</script>
+```
+
 
 ```{ojs}
 html`
@@ -607,6 +676,7 @@ Inputs.table(
       d.citations == null || d.citations === ""
         ? ""
         : Number(d.citations),
+    "Citations actualisées le": d.refreshed_at ? new Date(d.refreshed_at).toLocaleString("fr-FR") : "—",
     HAL: d.url || "",
     DOI: d.doi || ""
   })),
@@ -620,6 +690,7 @@ Inputs.table(
       "Pilier",
       "Axe",
       "Citations",
+      "Citations actualisées le",
       "HAL",
       "DOI"
     ],

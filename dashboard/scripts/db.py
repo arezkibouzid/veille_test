@@ -22,15 +22,15 @@ def database_path() -> Path:
 
 
 @contextmanager
-def connect_db(*, readonly: bool = False) -> Iterator[sqlite3.Connection]:
-    path = database_path()
+def connect_db(*, readonly: bool = False, path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    path = (path or database_path()).expanduser().resolve()
 
     if readonly:
         if not path.exists():
             raise FileNotFoundError(f"Base SQLite introuvable : {path}")
 
         connection = sqlite3.connect(
-            f"file:{path}?mode=ro",
+            f"{path.as_uri()}?mode=ro",
             uri=True,
             timeout=30,
         )
@@ -160,6 +160,32 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             metrics_json TEXT,
 
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pipeline_jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            step TEXT,
+            result_json TEXT,
+            error TEXT,
+            requested_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_single_running
+            ON pipeline_jobs(status) WHERE status = 'running';
+
+        CREATE TABLE IF NOT EXISTS validation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hal_id TEXT NOT NULL,
+            validated_pillar TEXT,
+            validated_axis TEXT,
+            reviewer TEXT,
+            validated_at TEXT,
+            validation_source TEXT,
+            action TEXT NOT NULL,
+            recorded_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
 
@@ -309,12 +335,47 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             ddl,
         )
 
+    for column, ddl in {
+        'artifact_path': 'TEXT',
+        'training_hal_ids_json': 'TEXT',
+    }.items():
+        add_column_if_missing(connection, 'model_versions', column, ddl)
+
+    connection.executescript("""
+        CREATE TRIGGER IF NOT EXISTS archive_validation_update
+        BEFORE UPDATE ON validations
+        BEGIN
+            INSERT INTO validation_history (
+                hal_id, validated_pillar, validated_axis, reviewer,
+                validated_at, validation_source, action
+            ) VALUES (OLD.hal_id, OLD.validated_pillar, OLD.validated_axis,
+                OLD.reviewer, OLD.validated_at, OLD.validation_source, 'corrected');
+        END;
+        CREATE TRIGGER IF NOT EXISTS archive_validation_delete
+        BEFORE DELETE ON validations
+        BEGIN
+            INSERT INTO validation_history (
+                hal_id, validated_pillar, validated_axis, reviewer,
+                validated_at, validation_source, action
+            ) VALUES (OLD.hal_id, OLD.validated_pillar, OLD.validated_axis,
+                OLD.reviewer, OLD.validated_at, OLD.validation_source, 'deleted');
+        END;
+    """)
+
     add_column_if_missing(
         connection,
         "validations",
         "validation_source",
         "TEXT NOT NULL DEFAULT 'dashboard'",
     )
+
+    # One-way compatibility migration inside SQLite; never replace a human label.
+    connection.execute("""
+        INSERT OR IGNORE INTO validations(hal_id,validated_pillar,validation_source)
+        SELECT hal_id, manual_pillar, 'historical_import' FROM articles
+        WHERE status='validated' AND COALESCE(TRIM(manual_pillar),'') != ''
+          AND NOT EXISTS (SELECT 1 FROM validations WHERE hal_id=articles.hal_id)
+    """)
 
     connection.execute(
         """

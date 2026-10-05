@@ -7,13 +7,7 @@ execute:
 ---
 
 ```{ojs}
-API_BASE = (
-  (location.hostname === "localhost" ||
-   location.hostname === "127.0.0.1") &&
-  location.port !== "10000"
-)
-  ? "http://127.0.0.1:8000"
-  : ""
+API_BASE = window.SEQUOIA_API_BASE || ""
 
 apiJson = async path => {
   const response = await fetch(`${API_BASE}${path}`)

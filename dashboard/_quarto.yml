@@ -1,0 +1,34 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Veille scientifique SequoIA"
+
+  navbar:
+    left:
+      - href: index.qmd
+        text: Vue d'ensemble
+
+      - href: ecosysteme.qmd
+        text: Écosystème
+
+      - href: collaborations.qmd
+        text: Collaborations
+
+      - href: publications.qmd
+        text: Publications
+
+      - href: validation.qmd
+        text: "Validation"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: false
+    code-fold: false
+
+execute:
+  echo: false
+  warning: false

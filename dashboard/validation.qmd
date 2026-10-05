@@ -29,6 +29,12 @@ execute:
   </div>
 </div>
 
+<div class="action-row">
+  <button id="predict-new" class="btn-primary" disabled>Prédire nouveaux articles</button>
+  <button id="retrain-model" class="btn-accent" disabled>Réentraîner le modèle</button>
+</div>
+<div id="pipeline-message" class="validation-message" role="status" aria-live="polite"></div>
+
 <div class="validation-toolbar">
   <label>
     Validateur
@@ -150,14 +156,7 @@ execute:
 ```{=html}
 <script>
 (() => {
-  // En local, FastAPI tourne sur le port 8000.
-  // Lors du déploiement, il suffira de remplacer cette URL.
-  const API_BASE =
-    ((window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1") &&
-    window.location.port !== "10000")
-      ? "http://127.0.0.1:8000"
-      : "";
+  const API_BASE = window.SEQUOIA_API_BASE || "";
 
   const state = {
     items: [],
@@ -433,7 +432,7 @@ execute:
 
     try {
       await api(
-        `/api/articles/${encodeURIComponent(article.halId_s)}/validate`,
+        `/api/articles/${encodeURIComponent(article.halId_s)}/${article.has_validation ? "correct" : "validate"}`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -584,11 +583,89 @@ execute:
     }
   );
 
+  const predictButton = el("predict-new");
+  const retrainButton = el("retrain-model");
+  const pipelineMessage = el("pipeline-message");
+  let pipelineEnabled = false;
+  let pipelineBusy = false;
+
+  function setPipelineBusy(busy) {
+    pipelineBusy = busy;
+    predictButton.disabled = busy || !pipelineEnabled;
+    retrainButton.disabled = busy || !pipelineEnabled;
+  }
+
+  async function pollPipeline(jobId) {
+    try {
+      const job = await api(`/api/pipelines/jobs/${encodeURIComponent(jobId)}`);
+      pipelineMessage.textContent = job.step || "Traitement en cours…";
+      if (job.status === "running") {
+        window.setTimeout(() => pollPipeline(jobId), 2000);
+        return;
+      }
+      setPipelineBusy(false);
+      if (job.status === "failed") {
+        pipelineMessage.textContent = `Échec : ${job.error}. Relance possible ; les données déjà enregistrées sont conservées.`;
+        pipelineMessage.className = "validation-message error";
+        return;
+      }
+      const result = job.result || {};
+      pipelineMessage.className = "validation-message success";
+      pipelineMessage.textContent = job.kind === "citations"
+        ? `${result.updated || 0} articles : citations OpenAlex actualisées.`
+        : job.kind === "predict"
+        ? `${result.hal?.inserted || 0} nouveaux articles HAL ; ${result.predicted || 0} prédictions enregistrées.`
+        : `Modèle ${result.model_version} : ${result.status === "active" ? "activé" : "candidat conservé"} ; F1 macro : ${Number(result.metrics?.holdout_macro_f1 || 0).toFixed(3)}.`;
+      await loadTaxonomy();
+      await loadStats();
+      await loadQueue();
+    } catch (error) {
+      // Retry status only: never automatically resubmit a pipeline.
+      pipelineMessage.textContent = `Suivi indisponible : ${error.message}. Nouvelle tentative…`;
+      window.setTimeout(() => pollPipeline(jobId), 5000);
+    }
+  }
+
+  async function startPipeline(kind) {
+    if (pipelineBusy) return;
+    setPipelineBusy(true);
+    pipelineMessage.className = "validation-message";
+    pipelineMessage.textContent = "Démarrage…";
+    try {
+      const result = await api(`/api/pipelines/${kind}`, {method: "POST"});
+      await pollPipeline(result.job_id);
+    } catch (error) {
+      pipelineMessage.className = "validation-message error";
+      pipelineMessage.textContent = error.message;
+      await restorePipeline();
+    }
+  }
+
+  async function restorePipeline() {
+    try {
+      const result = await api("/api/pipelines/latest");
+      pipelineEnabled = result.enabled;
+      setPipelineBusy(result.job?.status === "running");
+      if (pipelineBusy) {
+        pollPipeline(result.job.id);
+      } else if (!pipelineEnabled) {
+        pipelineMessage.textContent = "Les traitements ne sont pas activés dans cet environnement.";
+      }
+    } catch (error) {
+      pipelineMessage.textContent = `Impossible de charger les traitements : ${error.message}`;
+      setPipelineBusy(false);
+    }
+  }
+
+  predictButton.addEventListener("click", () => startPipeline("predict"));
+  retrainButton.addEventListener("click", () => startPipeline("retrain"));
+
   async function initialize() {
     try {
       await Promise.all([
         loadTaxonomy(),
-        loadStats()
+        loadStats(),
+        restorePipeline()
       ]);
 
       await loadQueue();
