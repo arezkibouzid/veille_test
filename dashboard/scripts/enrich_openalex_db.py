@@ -16,8 +16,10 @@ import requests
 
 try:
     from .db import connect_db, database_path, ensure_schema
+    from .report_evidence import citation_value
 except ImportError:  # exécution directe du script
     from db import connect_db, database_path, ensure_schema
+    from report_evidence import citation_value
 
 OPENALEX_WORKS = "https://api.openalex.org/works"
 USER_AGENT = "sequoia-veille/1.0"
@@ -350,7 +352,7 @@ class OpenAlexClient:
 
         r = self.get(
             f"{OPENALEX_WORKS}/{short_id}",
-            params={"select": "id,cited_by_count"},
+            params={"select": "id,doi,display_name,publication_year,cited_by_count"},
         )
         return None if r.status_code == 404 else r.json()
 
@@ -603,6 +605,26 @@ def save_mapping(connection, mapping: dict) -> None:
     )
 
 
+def save_work_metrics(con, hal_id, openalex_id, work):
+    """Keep identity evidence alongside counts, with a guarded write after I/O."""
+    count = citation_value(work.get('cited_by_count'))
+    if count is None:
+        raise ValueError('Nombre de citations OpenAlex invalide')
+    short_id = str(openalex_id).rstrip('/').split('/')[-1]
+    if work.get('id') and str(work['id']).rstrip('/').split('/')[-1] != short_id:
+        raise ValueError('Identifiant OpenAlex incohérent')
+    return con.execute(
+        "UPDATE articles SET citations=?, openalex_updated_at=?, "
+        "openalex_title=COALESCE(NULLIF(?,''),openalex_title), "
+        "openalex_doi=COALESCE(NULLIF(?,''),openalex_doi), "
+        "openalex_year=COALESCE(?,openalex_year), updated_at=CURRENT_TIMESTAMP "
+        "WHERE hal_id=? AND openalex_match_status='matched' "
+        "AND RTRIM(openalex_id,'/') IN (?,?)",
+        (count, datetime.now(timezone.utc).isoformat(timespec='seconds'),
+         clean_text(work.get('display_name')), normalize_doi(work.get('doi')),
+         work.get('publication_year'), hal_id, short_id, 'https://openalex.org/' + short_id)).rowcount
+
+
 def enrich_articles(*, hal_ids=None, limit=None, skip_metrics_refresh=False,
                     retry_unresolved=False, recheck_doi_matches=False) -> dict:
     """Les requêtes réseau sont exécutées hors transaction SQLite."""
@@ -661,12 +683,9 @@ def enrich_articles(*, hal_ids=None, limit=None, skip_metrics_refresh=False,
                 continue
             try:
                 work = client.by_openalex_id(row["openalex_id"])
-                citations = int(work["cited_by_count"]) if work and work.get("cited_by_count") is not None else None
-                with connect_db() as con:
-                    con.execute(
-                        "UPDATE articles SET citations=?, openalex_updated_at=?, "
-                        "updated_at=CURRENT_TIMESTAMP WHERE hal_id=?",
-                        (citations, datetime.now(timezone.utc).isoformat(timespec="seconds"), row["hal_id"]))
+                if work and work.get('cited_by_count') is not None:
+                    with connect_db() as con:
+                        save_work_metrics(con, row['hal_id'], row['openalex_id'], work)
             except requests.RequestException:
                 errors += 1
     if errors:
@@ -692,17 +711,10 @@ def refresh_citations(*, progress=None) -> dict:
         if work is None or work.get('cited_by_count') is None:
             not_found += len(ids)
         else:
-            count = int(work['cited_by_count'])
-            if count < 0:
-                raise ValueError('Nombre de citations OpenAlex invalide')
-            now = datetime.now(timezone.utc).isoformat(timespec='seconds')
             with connect_db() as con:
                 for hal_id in ids:
-                    cursor = con.execute("UPDATE articles SET citations=?, openalex_updated_at=?, "
-                        "updated_at=CURRENT_TIMESTAMP WHERE hal_id=? AND status='validated' AND openalex_match_status='matched' "
-                        "AND RTRIM(openalex_id,'/') IN (?,?)", (count, now, hal_id, openalex_id,
-                        'https://openalex.org/' + openalex_id))
-                    updated += cursor.rowcount
+                    if con.execute("SELECT 1 FROM articles WHERE hal_id=? AND status='validated'", (hal_id,)).fetchone():
+                        updated += save_work_metrics(con, hal_id, openalex_id, work)
         if progress:
             progress(f'Citations OpenAlex : {index}/{len(groups)} identifiants')
     # Known IDs are refreshed first; matching is reserved for absent IDs.
@@ -721,11 +733,9 @@ def refresh_citations(*, progress=None) -> dict:
             if work is None or work.get('cited_by_count') is None:
                 not_found += 1
                 continue
-            now = datetime.now(timezone.utc).isoformat(timespec='seconds')
             with connect_db() as con:
-                updated += con.execute("UPDATE articles SET citations=?, openalex_updated_at=?, "
-                    "updated_at=CURRENT_TIMESTAMP WHERE hal_id=? AND status='validated' AND openalex_id=?",
-                    (int(work['cited_by_count']), now, row['hal_id'], row['openalex_id'])).rowcount
+                if con.execute("SELECT 1 FROM articles WHERE hal_id=? AND status='validated'", (row['hal_id'],)).fetchone():
+                    updated += save_work_metrics(con, row['hal_id'], row['openalex_id'], work)
     with connect_db(readonly=True) as con:
         unresolved = con.execute("SELECT COUNT(*) FROM articles WHERE status='validated' "
                                 "AND (openalex_match_status IS NOT 'matched' OR TRIM(COALESCE(openalex_id,''))='') ").fetchone()[0]

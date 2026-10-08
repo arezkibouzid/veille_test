@@ -188,6 +188,16 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             recorded_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS veille_reports (
+            id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            recent_since TEXT NOT NULL,
+            article_count INTEGER NOT NULL,
+            recent_count INTEGER NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+
 
         CREATE TABLE IF NOT EXISTS publication_authors (
             hal_id TEXT NOT NULL,
@@ -314,6 +324,12 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
         "language": "TEXT",
         "author_affil_map": "TEXT",
         "manual_pillar": "TEXT",
+        "axis_pillar": "TEXT",
+        "axis_model_version": "TEXT",
+        "publication_date": "TEXT",
+        "publication_date_precision": "TEXT",
+        "publication_date_source": "TEXT",
+        "hal_metadata_updated_at": "TEXT",
 
         "openalex_title": "TEXT",
         "openalex_doi": "TEXT",
@@ -334,6 +350,23 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             column,
             ddl,
         )
+
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS hal_resource_notices (
+            hal_id TEXT PRIMARY KEY, in_collection INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS hal_resources (
+            resource_id TEXT PRIMARY KEY, kind TEXT NOT NULL, identifier TEXT NOT NULL,
+            url TEXT, metadata_hal_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS publication_resources (
+            hal_id TEXT NOT NULL, resource_id TEXT NOT NULL,
+            relation TEXT NOT NULL, source_field TEXT NOT NULL,
+            PRIMARY KEY(hal_id,resource_id,relation)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_publications ON publication_resources(resource_id);
+    """)
 
     for column, ddl in {
         'artifact_path': 'TEXT',
