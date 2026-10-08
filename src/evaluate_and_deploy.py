@@ -1,78 +1,88 @@
+"""Evaluate and save an immutable candidate before activating it in SQLite."""
 import json
+import uuid
+from datetime import datetime, timezone
+
 import joblib
-import mlflow
-import mlflow.sklearn
 from sklearn.metrics import accuracy_score, classification_report, f1_score
-from config.config import (
-    BEST_METRIC_PATH, CLASSIFIER_PATH, ENCODER_PATH, METADATA_PATH, 
-    MODEL_NAME, REGISTERED_MODEL_NAME, CANONICAL_LABELS, RANDOM_STATE
-)
+from config.config import ARTIFACT_DIR, MODEL_NAME, CANONICAL_LABELS, RANDOM_STATE, REGISTERED_MODEL_NAME
+from dashboard.scripts.db import connect_db
 
-def evaluate_and_register(
-    classifier, encoder, test_embeddings, test_df, full_df_len, 
-    text_columns, cache_hit, embedding_seconds, fit_seconds, training_mode
-):
-    test_preds = classifier.predict(test_embeddings)
-    test_acc = accuracy_score(test_df['manual_label'], test_preds)
-    test_macro_f1 = f1_score(test_df['manual_label'], test_preds, average='macro')
 
-    print(f"\n================ EVALUATION REPORT ({training_mode}) ================")
-    print(classification_report(test_df['manual_label'], test_preds, zero_division=0))
-
-    previous_best_f1 = 0.0
-    if BEST_METRIC_PATH.exists():
+def evaluate_and_register(classifier, encoder, test_embeddings, test_df, full_df_len,
+                          text_columns, cache_hit, embedding_seconds, fit_seconds,
+                          training_mode, *, dataset_version, train_ids, references):
+    predictions = classifier.predict(test_embeddings)
+    metrics = {
+        'holdout_accuracy': float(accuracy_score(test_df['manual_label'], predictions)),
+        'holdout_macro_f1': float(f1_score(test_df['manual_label'], predictions, average='macro')),
+        'embedding_time_sec': embedding_seconds, 'fit_time_sec': fit_seconds,
+    }
+    print(classification_report(test_df['manual_label'], predictions, zero_division=0))
+    with connect_db(readonly=True) as con:
+        previous = con.execute(
+            "SELECT dataset_version, metrics_json FROM model_versions WHERE status='active'").fetchone()
+    # Evaluate the active classifier on exactly the candidate holdout.
+    previous_score = None
+    from config.config import CLASSIFIER_PATH
+    if previous or CLASSIFIER_PATH.exists():
+        from dashboard.scripts.model_store import active_bundle
+        _, paths = active_bundle()
+        active_classifier = joblib.load(paths['classifier'])
+        # main uses the active encoder for both classifiers; reuse its holdout
+        # embeddings rather than allocating a second 420 MB encoder on the VM.
+        baseline_predictions = active_classifier.predict(test_embeddings)
+        from config.config import PILLAR_MAP
+        baseline_predictions = [PILLAR_MAP.get(str(label).strip().lower(), str(label))
+                                for label in baseline_predictions]
+        previous_score = float(f1_score(test_df['manual_label'], baseline_predictions, average='macro'))
+    activate = previous_score is None or metrics['holdout_macro_f1'] > previous_score
+    version = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:8]
+    directory = ARTIFACT_DIR / 'versions' / version
+    directory.mkdir(parents=True, exist_ok=False)
+    joblib.dump(classifier, directory / 'sgd_classifier.joblib')
+    joblib.dump({'references': references}, directory / 'subaxis_references.joblib')
+    encoder.save(str(directory / 'mpnet_encoder'))
+    metadata = {
+        'version': version, 'model_name': MODEL_NAME, 'labels': CANONICAL_LABELS,
+        'text_columns': text_columns, 'last_training_mode': training_mode,
+        'total_samples': full_df_len, 'dataset_version': dataset_version,
+        'train_ids': train_ids, 'test_ids': test_df['halId_s'].tolist(),
+        'embedding_cache_hit': bool(cache_hit), 'random_state': RANDOM_STATE,
+        'metrics': metrics, 'previous_comparable_macro_f1': previous_score,
+    }
+    (directory / 'metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    (directory / 'metrics.json').write_text(json.dumps(metrics, indent=2), encoding='utf-8')
+    with connect_db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        if activate:
+            con.execute("UPDATE model_versions SET status='archived' WHERE status='active'")
+        con.execute(
+            'INSERT INTO model_versions(version,status,dataset_version,metrics_json,artifact_path,training_hal_ids_json) '
+            'VALUES (?,?,?,?,?,?)',
+            (version, 'active' if activate else 'candidate', dataset_version,
+             json.dumps(metrics), str(directory.relative_to(ARTIFACT_DIR)), json.dumps(train_ids)))
+    # SQLite and the local bundle remain sufficient when MLflow is not installed.
+    mlflow_status = 'not_installed'
+    try:
+        import mlflow
+        import mlflow.sklearn
+    except ImportError:
+        pass
+    else:
         try:
-            previous_best_f1 = json.loads(BEST_METRIC_PATH.read_text()).get("best_macro_f1", 0.0)
+            mlflow.set_tracking_uri(f'sqlite:///{ARTIFACT_DIR / "mlflow.db"}')
+            mlflow.set_experiment('sequoia-mpnet-sgd-continual')
+            with mlflow.start_run(run_name=version):
+                mlflow.log_params({'dataset_version': dataset_version, 'model_version': version,
+                                   'learning_mode': training_mode, 'dataset_rows': full_df_len})
+                mlflow.log_metrics(metrics)
+                mlflow.sklearn.log_model(classifier, name='model' if activate else 'candidate_model',
+                                        registered_model_name=REGISTERED_MODEL_NAME if activate else None)
+            mlflow_status = 'logged'
         except Exception:
-            previous_best_f1 = 0.0
-
-    is_new_best = test_macro_f1 > previous_best_f1
-
-    mlflow.set_tracking_uri('sqlite:///mlflow.db')
-    mlflow.set_experiment('sequoia-mpnet-sgd-continual')
-
-    with mlflow.start_run(run_name=f"pipeline-{training_mode}"):
-        mlflow.log_params({
-            "dataset_rows": full_df_len,
-            "learning_mode": training_mode,
-            "loss": "log_loss",
-            "dvc_tracked": True,
-            "embedding_cache_hit": int(cache_hit),
-            "random_state": RANDOM_STATE
-        })
-
-        mlflow.log_metrics({
-            "holdout_accuracy": test_acc,
-            "holdout_macro_f1": test_macro_f1,
-            "previous_best_macro_f1": previous_best_f1,
-            "is_new_best": int(is_new_best),
-            "embedding_time_sec": embedding_seconds,
-            "fit_time_sec": fit_seconds
-        })
-
-        if is_new_best:
-            print(f"🎯 NEW BEST MODEL! Macro-F1 ({test_macro_f1:.4f} > {previous_best_f1:.4f}). Exporting & Registering...")
-            joblib.dump(classifier, CLASSIFIER_PATH)
-            encoder.save(str(ENCODER_PATH))
-
-            BEST_METRIC_PATH.write_text(json.dumps({"best_macro_f1": test_macro_f1}, indent=2))
-            
-            metadata = {
-                'model_name': MODEL_NAME,
-                'classifier': 'sklearn.linear_model.SGDClassifier',
-                'labels': CANONICAL_LABELS,
-                'text_columns': text_columns,
-                'last_training_mode': training_mode,
-                'total_samples': full_df_len,
-                'best_holdout_macro_f1': test_macro_f1
-            }
-            METADATA_PATH.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
-
-            mlflow.sklearn.log_model(
-                classifier,
-                name="model",
-                registered_model_name=REGISTERED_MODEL_NAME
-            )
-        else:
-            print(f"🛑 Metric did not improve baseline ({previous_best_f1:.4f}). Disk artifacts untouched.")
-            mlflow.sklearn.log_model(classifier, name="candidate_model")
+            mlflow_status = 'logging_failed'
+    result = {'model_version': version, 'status': 'active' if activate else 'candidate',
+              'dataset_version': dataset_version, 'metrics': metrics, 'mlflow': mlflow_status}
+    (ARTIFACT_DIR / 'latest_training.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    return result

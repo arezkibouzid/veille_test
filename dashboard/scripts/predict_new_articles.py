@@ -17,25 +17,29 @@ def predict_new_articles(*, hal_ids=None, progress=None) -> dict:
         rows = [row for row in rows if row['hal_id'] in hal_ids]
     if not rows:
         return {'predicted': 0, 'skipped': 0}
-    version, encoder, classifier, references = load_bundle()
+    if all((row['manual_pillar'] or '').strip() for row in rows):
+        version, encoder, classifier, references = load_bundle(include_classifier=False)
+    else:
+        version, encoder, classifier, references = load_bundle()
     written = 0
     for index, row in enumerate(rows, 1):
+        options = {'manual_pillar': row['manual_pillar']} if row['manual_pillar'] else {}
         result = predict_article(encoder, classifier, references,
-                                row['title'], row['abstract'], row['keywords'])
+                                row['title'], row['abstract'], row['keywords'], **options)
         pillar = PILLAR_MAP.get(result['pillar'].strip().lower())
-        confidence = float(result['pillar_confidence'])
+        confidence = float(result['pillar_confidence']) if result['pillar_confidence'] is not None else None
         similarity = result.get('subaxis_similarity')
-        if pillar is None or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        if pillar is None or (confidence is None and not options) or (confidence is not None and (not math.isfinite(confidence) or not 0 <= confidence <= 1)):
             raise ValueError(f"Prédiction invalide pour {row['hal_id']}")
         if similarity is not None and not math.isfinite(float(similarity)):
             raise ValueError(f"Similarité invalide pour {row['hal_id']}")
         with connect_db() as con:
             cursor = con.execute(
                 "UPDATE articles SET predicted_pillar=?, pillar_confidence=?, predicted_axis=?, "
-                "axis_similarity=?, model_version=?, status='to_review', updated_at=CURRENT_TIMESTAMP "
-                "WHERE hal_id=? AND status='new' AND NOT EXISTS "
+                "axis_similarity=?, model_version=?, axis_pillar=?, axis_model_version=?, status='to_review', updated_at=CURRENT_TIMESTAMP "
+                "WHERE hal_id=? AND manual_pillar IS ? AND status='new' AND NOT EXISTS "
                 "(SELECT 1 FROM validations WHERE hal_id=articles.hal_id)",
-                (pillar, confidence, result['subaxis'], similarity, version, row['hal_id']))
+                (pillar, confidence, result['subaxis'], similarity, version, pillar, version, row['hal_id'], row['manual_pillar']))
             written += cursor.rowcount
         if progress:
             progress(f'Prédiction : {index}/{len(rows)}')

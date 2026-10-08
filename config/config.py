@@ -1,9 +1,8 @@
+import os
 from pathlib import Path
 
-WORKSPACE = Path('./')
-DATA_PATH = WORKSPACE / 'data' / 'manual_labels_with_hal_metadata.csv'
-ARTIFACT_DIR = WORKSPACE / 'mpnet_sgd_artifacts'
-ARTIFACT_DIR.mkdir(exist_ok=True)
+WORKSPACE = Path(__file__).resolve().parents[1]
+ARTIFACT_DIR = Path(os.getenv('SEQUOIA_ARTIFACT_DIR', str(WORKSPACE / 'mpnet_sgd_artifacts'))).expanduser().resolve()
 
 MODEL_NAME = 'sentence-transformers/all-mpnet-base-v2'
 CLASSIFIER_PATH = ARTIFACT_DIR / 'sgd_classifier.joblib'
@@ -32,8 +31,8 @@ PILLAR_MAP = {
 
 
 CANONICAL_LABELS = [
-    'AI, cybersecurity and defense',
-    'AI, environment and ocean',
+    'AI, Cybersecurity and Defense',
+    'AI, Environment and Ocean',
     'Core AI',
     'No class',
 ]

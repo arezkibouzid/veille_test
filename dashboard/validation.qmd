@@ -613,6 +613,8 @@ execute:
       pipelineMessage.className = "validation-message success";
       pipelineMessage.textContent = job.kind === "citations"
         ? `${result.updated || 0} articles : citations OpenAlex actualisées.`
+        : job.kind === "report"
+        ? `Rapport de veille disponible : ${result.article_count || 0} publications.`
         : job.kind === "predict"
         ? `${result.hal?.inserted || 0} nouveaux articles HAL ; ${result.predicted || 0} prédictions enregistrées.`
         : `Modèle ${result.model_version} : ${result.status === "active" ? "activé" : "candidat conservé"} ; F1 macro : ${Number(result.metrics?.holdout_macro_f1 || 0).toFixed(3)}.`;

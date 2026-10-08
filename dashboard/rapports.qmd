@@ -1,0 +1,119 @@
+---
+title: "Rapports de veille"
+page-layout: full
+---
+
+```{=html}
+<section class="hero-banner">
+  <div>
+    <div class="hero-kicker">CLUSTER SEQUOIA</div>
+    <h1>Rapports de veille</h1>
+    <p>Une synthèse du corpus scientifique du Cluster, par pilier et axe.</p>
+  </div>
+</section>
+<section class="chart-card">
+  <h2>Générer le panorama scientifique</h2>
+  <button id="generate-report" class="citations-refresh-button" disabled>Générer le rapport de veille</button>
+  <p id="report-progress" role="status" aria-live="polite">Chargement…</p>
+</section>
+<section class="section-header"><h2>Rapports disponibles</h2></section>
+<div id="report-list"></div>
+<script>
+function initializeReports() {
+  const base = window.SEQUOIA_API_BASE || "";
+  const button = document.getElementById("generate-report");
+  const message = document.getElementById("report-progress");
+  const list = document.getElementById("report-list");
+  let enabled = false;
+  let polling = false;
+  async function api(path, options = {}) {
+    const response = await fetch(base + path, options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    return data;
+  }
+  async function loadReports() {
+    const data = await api("/api/reports");
+    enabled = data.enabled;
+    list.replaceChildren();
+    if (!data.items.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "Aucun rapport pour le moment. Générez le premier panorama du corpus.";
+      list.append(empty);
+    }
+    for (const [index, report] of data.items.entries()) {
+      const card = document.createElement("article");
+      card.className = "chart-card";
+      card.style.marginBottom = ".7rem";
+      const title = document.createElement("h3");
+      title.textContent = `${index === 0 ? "Dernier rapport — " : "Rapport — "}${new Date(report.generated_at).toLocaleString("fr-FR")}`;
+      const description = document.createElement("p");
+      description.textContent = `${report.article_count.toLocaleString("fr-FR")} publications analysées dans les piliers du Cluster.`;
+      card.append(title, description);
+      for (const [format, label] of [["pdf", "Télécharger le PDF"]]) {
+        const link = document.createElement("a");
+        link.href = `${base}/api/reports/${encodeURIComponent(report.id)}/${format}`;
+        link.textContent = label;
+        link.className = "citations-refresh-button";
+        link.style.marginRight = ".7rem";
+        card.append(link);
+      }
+      list.append(card);
+    }
+  }
+  async function poll(id) {
+    polling = true;
+    button.disabled = true;
+    try {
+      const job = await api(`/api/pipelines/jobs/${encodeURIComponent(id)}`);
+      message.textContent = job.step || "Traitement en cours…";
+      if (job.status === "running") { setTimeout(() => poll(id), 2000); return; }
+      polling = false;
+      await loadReports();
+      button.disabled = !enabled;
+      if (job.status === "failed") message.textContent = `Échec : ${job.error}. Vous pouvez relancer ; les anciens rapports sont conservés.`;
+      else if (job.kind === "report") message.textContent = job.result?.reused
+        ? "Le contenu n’a pas changé : le rapport existant est disponible ci-dessous."
+        : "Votre rapport est disponible ci-dessous.";
+      else message.textContent = "Le traitement est terminé. Vous pouvez générer le rapport.";
+    } catch (error) {
+      message.textContent = `Suivi indisponible : ${error.message}. Nouvelle tentative…`;
+      setTimeout(() => poll(id), 5000);
+    }
+  }
+
+  async function restore() {
+    await loadReports();
+    const data = await api("/api/pipelines/latest");
+    if (data.job?.status === "running") {
+      await poll(data.job.id);
+      return;
+    }
+    button.disabled = !enabled;
+    message.textContent = enabled
+      ? "Le dernier rapport est disponible ci-dessous."
+      : "La génération est indisponible. Les rapports existants restent consultables.";
+  }
+
+  button.addEventListener("click", async () => {
+    if (polling) return;
+    button.disabled = true;
+    message.textContent = "Démarrage de la génération…";
+    try {
+      const data = await api("/api/pipelines/report", {method: "POST"});
+      poll(data.job_id);
+    } catch (error) {
+      message.textContent = error.message;
+      try {
+        const data = await api("/api/pipelines/latest");
+        if (data.job?.status === "running") poll(data.job.id);
+        else button.disabled = !enabled;
+      } catch (_) { button.disabled = true; }
+    }
+  });
+  restore().catch(error => { message.textContent = `Impossible de charger les rapports : ${error.message}`; });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initializeReports);
+else initializeReports();
+</script>
+```

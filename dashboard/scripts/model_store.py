@@ -75,11 +75,11 @@ def active_bundle() -> tuple[str, dict]:
     return version, bundle_paths(directory)
 
 
-def load_bundle():
+def load_bundle(*, include_classifier=True):
     import joblib
     from sentence_transformers import SentenceTransformer
     version, paths = active_bundle()
     encoder = SentenceTransformer(str(paths['encoder']), local_files_only=True)
-    classifier = joblib.load(paths['classifier'])
+    classifier = joblib.load(paths['classifier']) if include_classifier else None
     references = joblib.load(paths['references'])
     return version, encoder, classifier, references

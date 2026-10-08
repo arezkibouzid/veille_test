@@ -22,6 +22,12 @@ website:
       - href: validation.qmd
         text: "Validation"
 
+      - href: rapports.qmd
+        text: "Rapports de veille"
+
+      - href: technologies.qmd
+        text: "Technologies et ressources"
+
 format:
   html:
     theme: cosmo

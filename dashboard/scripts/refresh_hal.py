@@ -1,4 +1,4 @@
-"""Extraction HAL vers SQLite, sans classification ni fichier intermédiaire."""
+"""Extraction HAL vers SQLite"""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+
+from dashboard.scripts.hal_resources import HAL_RESOURCE_FIELDS, save_documents, enrich_tei, enrich_doi_resources
 
 try:
     from .db import connect_db, database_path, ensure_schema
@@ -51,6 +53,7 @@ HAL_FIELDS = [
     "domainAllCode_s",
     "language_s",
 ]
+HAL_FIELDS += HAL_RESOURCE_FIELDS
 
 
 DOC_TYPE_LABELS = {
@@ -66,6 +69,7 @@ DOC_TYPE_LABELS = {
     "PROCEEDINGS": "Actes",
     "OTHER": "Autre",
     "SOFTWARE": "Logiciel",
+    "PATENT": "Brevet",
     "PRESCONF": "Présentation",
     "MEM": "Mémoire",
     "LECTURE": "Cours",
@@ -290,6 +294,7 @@ def to_dataframe(
 
         rows.append(
             {
+                "hal_metadata_json": json.dumps(document, ensure_ascii=False),
                 "docid":
                     document.get("docid"),
 
@@ -487,9 +492,10 @@ def replace_relations(connection, hal_id: str, row: pd.Series) -> None:
     )
 
 
-def upsert_hal(dataframe: pd.DataFrame) -> tuple[int, int, int]:
+def upsert_hal(dataframe: pd.DataFrame, *, collection_complete=False) -> tuple[int, int, int]:
     inserted = 0
     updated = 0
+    metadata_documents = []
 
     with connect_db() as connection:
         ensure_schema(connection)
@@ -559,6 +565,9 @@ def upsert_hal(dataframe: pd.DataFrame) -> tuple[int, int, int]:
             )
 
             replace_relations(connection, hal_id, row)
+            raw_metadata = row.get('hal_metadata_json')
+            if isinstance(raw_metadata, str) and raw_metadata:
+                metadata_documents.append(json.loads(raw_metadata))
 
             if is_new:
                 inserted += 1
@@ -566,16 +575,24 @@ def upsert_hal(dataframe: pd.DataFrame) -> tuple[int, int, int]:
             else:
                 updated += 1
 
+        if metadata_documents:
+            save_documents(connection, metadata_documents)
+            if collection_complete:
+                connection.execute('UPDATE hal_resource_notices SET in_collection=0')
+                connection.executemany('UPDATE hal_resource_notices SET in_collection=1 WHERE hal_id=?',
+                    [(d['halId_s'],) for d in metadata_documents if 'SEQUOIA' in d.get('collCode_s', [])])
         total = connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
 
     return inserted, updated, total
 
 
 def refresh_hal() -> dict:
-    dataframe = to_dataframe(fetch_hal())
-    inserted, updated, total = upsert_hal(dataframe)
+    documents = enrich_tei(fetch_hal())
+    resource_failures = enrich_doi_resources(documents)
+    dataframe = to_dataframe(documents)
+    inserted, updated, total = upsert_hal(dataframe, collection_complete=True)
     return {"received": len(dataframe), "inserted": inserted,
-            "updated": updated, "total": total}
+            "updated": updated, "total": total, "resource_metadata_failures": resource_failures}
 
 
 def main() -> None:

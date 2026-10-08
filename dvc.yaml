@@ -1,39 +1,46 @@
 stages:
-
   snapshot_db:
-    cmd: python dashboard/scripts/snapshot_db.py
+    cmd: python -m dashboard.scripts.snapshot_db --output dashboard/data/snapshots/sequoia_v2_snapshot.db
+    always_changed: true
     deps:
       - dashboard/scripts/snapshot_db.py
+      - dashboard/scripts/db.py
     outs:
       - dashboard/data/snapshots/sequoia_v2_snapshot.db
-      
+
   preprocess:
-    cmd: python -m src.preprocess
+    cmd: python -m src.preprocess --database dashboard/data/snapshots/sequoia_v2_snapshot.db --manifest dashboard/data/snapshots/training_manifest.json
     deps:
-      - data/manual_labels_with_hal_metadata.csv
+      - dashboard/data/snapshots/sequoia_v2_snapshot.db
       - src/preprocess.py
+      - dashboard/scripts/db.py
       - config/config.py
+    outs:
+      - dashboard/data/snapshots/training_manifest.json
 
   encode:
-    cmd: python -c "from src.encode import load_encoder; load_encoder()"
+    cmd: python -c "from src.encoder import load_encoder; load_encoder()"
     deps:
-      - src/encode.py
+      - src/encoder.py
       - config/config.py
     outs:
       - mpnet_sgd_artifacts/mpnet_encoder
 
   train_and_evaluate:
-    cmd: python main.py
+    cmd: python main.py --database dashboard/data/snapshots/sequoia_v2_snapshot.db
     deps:
-      - data/manual_labels_with_hal_metadata.csv
+      - dashboard/data/snapshots/sequoia_v2_snapshot.db
+      - dashboard/data/snapshots/training_manifest.json
+      - mpnet_sgd_artifacts/mpnet_encoder
       - src/
+      - main.py
       - config/config.py
+      - dashboard/scripts/db.py
+      - dashboard/scripts/model_store.py
     outs:
-      - mpnet_sgd_artifacts/sgd_classifier.joblib
+      - mpnet_sgd_artifacts/versions:
+          persist: true
       - mpnet_sgd_artifacts/subaxis_references.joblib
-      - mpnet_sgd_artifacts/best_metric.json
-      - mpnet_sgd_artifacts/metadata.json
     metrics:
-      - mpnet_sgd_artifacts/best_metric.json:
+      - mpnet_sgd_artifacts/latest_training.json:
           cache: false
-    

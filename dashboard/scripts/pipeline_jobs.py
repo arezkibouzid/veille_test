@@ -1,4 +1,3 @@
-"""Single background pipeline, coordinated across API processes by a file lock."""
 from __future__ import annotations
 
 import fcntl
@@ -95,6 +94,10 @@ def run_job(job_id, kind, lock):
             from dashboard.scripts.enrich_openalex_db import refresh_citations
             progress('Rafraîchissement des citations OpenAlex')
             result = refresh_citations(progress=progress)
+        elif kind == 'report':
+            from dashboard.scripts.veille_report import generate_report
+            progress('Lecture du corpus validé et analyse')
+            result = generate_report(progress=progress)
         else:
             result = predict_pipeline(progress) if kind == 'predict' else retrain_pipeline(progress, job_id)
         update_job(job_id, status='succeeded', step='Terminé', result=result)
@@ -107,7 +110,7 @@ def run_job(job_id, kind, lock):
 
 
 def start_job(kind, reviewer):
-    if kind not in {'predict', 'retrain', 'citations'}:
+    if kind not in {'predict', 'retrain', 'citations', 'report'}:
         raise ValueError('Pipeline inconnu')
     lock_path = database_path().resolve().with_suffix('.pipeline.lock')
     lock_path.parent.mkdir(parents=True, exist_ok=True)

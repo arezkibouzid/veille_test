@@ -1,0 +1,153 @@
+---
+title: "Technologies et ressources"
+page-layout: full
+---
+
+```{=html}
+<section class="hero-banner">
+  <div><div class="hero-kicker">CLUSTER SEQUOIA</div>
+    <h1>Technologies et ressources</h1>
+    <p>Données, codes, logiciels et brevets pour explorer les résultats des travaux du Cluster.</p>
+  </div>
+</section>
+<section class="filter-grid resource-filter-grid" aria-label="Filtres des ressources">
+  <label class="filter-card">RECHERCHE<input id="resource-query" type="search" placeholder="Nom, sujet, auteur ou identifiant" style="width:100%"></label>
+  <label class="filter-card">TYPE<select id="resource-kind" style="width:100%"><option value="">Tous</option><option value="dataset">Jeux de données</option><option value="software">Logiciels</option><option value="code">Codes sources</option><option value="patent">Brevets</option></select></label>
+  <label class="filter-card">PILIER<select id="resource-pillar" style="width:100%"><option value="">Tous</option></select></label>
+  <label class="filter-card">LABORATOIRE<select id="resource-lab" style="width:100%"><option value="">Tous</option></select></label>
+  <label class="filter-card">ANNÉE<select id="resource-year" style="width:100%"><option value="">Toutes</option></select></label>
+</section>
+<p id="resource-status" role="status" aria-live="polite">Chargement des ressources…</p>
+<section class="chart-card" aria-label="Répartition des ressources"><h2>Ressources par type</h2><div id="resource-chart"></div></section>
+<section class="chart-card" aria-label="Ressources par année et par type" style="margin:1rem 0">
+  <h2>Ressources par année</h2>
+  <p>Année de publication renseignée dans la notice de la ressource.</p>
+  <div id="resource-year-chart"></div>
+  <p id="resource-year-note"></p>
+</section>
+<style>
+.filter-grid.resource-filter-grid { grid-template-columns:repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.resource-year-legend { display:flex; flex-wrap:wrap; gap:1rem; margin-bottom:1rem; }
+.resource-year-key { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:0.4rem; }
+.resource-year-row { display:grid; grid-template-columns:5rem 1fr; gap:1rem; margin:1rem 0; }
+.resource-year-series { display:grid; gap:0.35rem; }
+.resource-year-track { position:relative; background:#f1f4f8; border-radius:4px; min-height:28px; overflow:hidden; }
+.resource-year-bar { position:absolute; inset:0 auto 0 0; opacity:0.3; }
+.resource-year-label { position:relative; display:block; padding:0.2rem 0.5rem; color:#172b4d; }
+</style>
+<div id="resource-list"></div>
+<script>
+async function initializeResources() {
+  const base = window.SEQUOIA_API_BASE || "";
+  const status = document.getElementById("resource-status");
+  const list = document.getElementById("resource-list");
+  const controls = Object.fromEntries(["query", "kind", "pillar", "lab", "year"].map(name => [name, document.getElementById(`resource-${name}`)]));
+  const el = (tag, text) => { const node = document.createElement(tag); if (text) node.textContent = text; return node; };
+  const link = (label, url) => {
+    const node = el("a", label);
+    try { const parsed = new URL(url); if (["http:", "https:"].includes(parsed.protocol)) { node.href = url; node.target = "_blank"; node.rel = "noopener noreferrer"; } } catch (_) {}
+    return node;
+  };
+  const labsFor = item => item.cluster_labs || [];
+  const yearOf = r => /^(\d{4})(?:-|$)/.exec(r.publication_date || "")?.[1] || "";
+  try {
+    const response = await fetch(`${base}/api/dashboard/resources`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const {items = [], lab_options = []} = await response.json();
+    for (const year of [...new Set(items.map(yearOf).filter(Boolean))].sort().reverse()) {
+      const option = el("option", year); option.value = year; controls.year.append(option);
+    }
+    if (items.some(r => !yearOf(r))) {
+      const option = el("option", "Sans date"); option.value = "undated"; controls.year.append(option);
+    }
+    for (const [name, options] of [["pillar", items.flatMap(r => r.pillars)], ["lab", lab_options]]) {
+      for (const value of [...new Set(options)].sort()) { const option = el("option", value); option.value = value; controls[name].append(option); }
+    }
+    function render() {
+      const query = controls.query.value.trim().toLocaleLowerCase("fr-FR");
+      const selected = items.filter(r => (!controls.kind.value || r.kind === controls.kind.value
+        || (controls.kind.value === "code" && r.access_links.some(a => a.label === "Code / dépôt" || a.label === "Archive Software Heritage")))
+        && (!controls.pillar.value || r.pillars.includes(controls.pillar.value))
+        && (!controls.lab.value || labsFor(r).includes(controls.lab.value))
+        && (!controls.year.value || (controls.year.value === "undated" ? !yearOf(r) : yearOf(r) === controls.year.value))
+        && (!query || [r.title, r.description, r.identifier, r.authors, ...labsFor(r), ...r.publications.map(p => p.title)].join(" ").toLocaleLowerCase("fr-FR").includes(query)));
+      status.textContent = `${selected.length} ressource${selected.length > 1 ? "s" : ""} dans la sélection`;
+      const chart = document.getElementById("resource-chart");
+      chart.replaceChildren();
+      const kinds = [["dataset", "Jeux de données"], ["software", "Logiciels"], ["code", "Codes sources"], ["patent", "Brevets"]];
+      const matchesKind = (r, kind) => r.kind === kind || (kind === "code" && r.access_links.some(a => a.label === "Code / dépôt" || a.label === "Archive Software Heritage"));
+      const counts = kinds.map(([kind]) => selected.filter(r => matchesKind(r, kind)).length);
+      const max = Math.max(1, ...counts);
+      kinds.forEach(([kind, label], index) => {
+        const row = el("button", `${label} : ${counts[index]}`);
+        row.type = "button"; row.style.display = "block"; row.style.width = "100%";
+        row.style.margin = "0.6rem 0"; row.style.padding = "0.7rem"; row.style.textAlign = "left";
+        row.style.border = "1px solid #d9e1ee"; row.style.borderRadius = "6px";
+        row.style.background = `linear-gradient(to right, #d9e8fb ${100 * counts[index] / max}%, #f7f9fd 0%)`;
+        row.addEventListener("click", () => { controls.kind.value = controls.kind.value === kind ? "" : kind; render(); });
+        chart.append(row);
+      });
+      const yearChart = document.getElementById("resource-year-chart");
+      yearChart.replaceChildren();
+      const years = [...new Set(selected.map(yearOf).filter(Boolean))].sort();
+      const colors = ["#2563eb", "#059669", "#7c3aed", "#d97706"];
+      const groups = years.map(year => ({year, counts: kinds.map(([kind]) => selected.filter(r => yearOf(r) === year && matchesKind(r, kind)).length)}));
+      const annualMax = Math.max(1, ...groups.flatMap(group => group.counts));
+      if (years.length) {
+        const legend = el("div"); legend.className = "resource-year-legend";
+        kinds.forEach(([, label], index) => {
+          const key = el("span"); const swatch = el("span");
+          swatch.className = "resource-year-key"; swatch.style.background = colors[index];
+          key.append(swatch, document.createTextNode(label)); legend.append(key);
+        });
+        yearChart.append(legend);
+        for (const group of groups) {
+          const row = el("div"); row.className = "resource-year-row";
+          row.append(el("strong", group.year));
+          const series = el("div"); series.className = "resource-year-series";
+          kinds.forEach(([, label], index) => {
+            const track = el("div"); track.className = "resource-year-track";
+            const bar = el("span"); bar.className = "resource-year-bar";
+            bar.style.width = `${100 * group.counts[index] / annualMax}%`; bar.style.background = colors[index];
+            const value = el("span", `${label} : ${group.counts[index]}`); value.className = "resource-year-label";
+            track.append(bar, value); series.append(track);
+          });
+          row.append(series); yearChart.append(row);
+        }
+      } else yearChart.append(el("p", "Aucune ressource datée dans cette sélection."));
+      const undated = selected.filter(r => !yearOf(r)).length;
+      document.getElementById("resource-year-note").textContent =
+        `${undated} ressource${undated > 1 ? "s" : ""} sans année renseignée. Un logiciel avec un dépôt figure aussi dans les codes sources.`;
+      list.replaceChildren();
+      if (!selected.length) list.append(el("p", "Aucune ressource ne correspond à ces filtres."));
+      for (const r of selected) {
+        const card = el("article"); card.className = "chart-card"; card.style.marginBottom = "1rem";
+        card.append(el("p", r.kind_label), el("h2", r.title));
+        if (r.description) card.append(el("p", r.description));
+        const meta = [r.date_label, r.authors, r.version && `Version ${r.version}`, r.languages?.join(", "), r.patent_number && `Brevet ${r.patent_number}`].filter(Boolean);
+        if (meta.length) card.append(el("p", meta.join(" · ")));
+        if (r.pillars.length) card.append(el("p", r.pillars.join(" · ")));
+        if (r.axes.length) card.append(el("p", r.axes.join(" · ")));
+        if (labsFor(r).length) card.append(el("p", `Laboratoires : ${labsFor(r).join(" · ")}`));
+        if (r.kind !== "patent") card.append(el("p", `Licences déclarées : ${r.license || "non renseignées"}`));
+        const access = el("p");
+        if (r.url) { const primary = link(r.kind === "patent" ? "Notice du brevet" : r.origin === "collection" ? "Notice HAL" : "Accéder à la ressource", r.url); primary.className = "citations-refresh-button"; access.append(primary); }
+        for (const a of r.access_links) { access.append(document.createTextNode(" · "), link(a.label, a.url)); }
+        card.append(access);
+        if (r.publications.length) {
+          card.append(el("h3", r.publications.length === 1 ? "Publication associée" : "Publications associées"));
+          const ul = el("ul");
+          for (const p of r.publications) { const li = el("li"); li.append(link(p.title || p.hal_id, p.url)); if (p.relation_label) li.append(document.createTextNode(` — ${p.relation_label}`)); ul.append(li); }
+          card.append(ul);
+        }
+        list.append(card);
+      }
+    }
+    Object.values(controls).forEach(control => control.addEventListener("input", render));
+    render();
+  } catch (error) { status.textContent = `Impossible de charger les ressources : ${error.message}. Rechargez la page pour réessayer.`; }
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initializeResources);
+else initializeResources();
+</script>
+```

@@ -271,7 +271,7 @@ Triés par année décroissante. Cliquez sur les en-têtes du tableau pour explo
 ```{ojs}
 Inputs.table(
   displayedPublications.map(d => ({
-    Année: String(d.year ?? ""),
+    Année: d.publication_date ? d.publication_date.split("-").reverse().join("/") : String(d.year ?? ""),
     Titre: d.title || "",
     Auteurs: d.authors || "",
     Type: d.doc_type || "",
@@ -306,7 +306,7 @@ Inputs.table(
     ],
 
     width: {
-      Année: 70,
+      Année: 100,
       Titre: 340,
       Auteurs: 230,
       Type: 95,

@@ -135,6 +135,8 @@ def public_article_sql() -> str:
             a.institutions,
             a.doc_type,
             a.year,
+            a.publication_date,
+            a.publication_date_precision,
             a.journal,
             a.conference,
             a.keywords,
@@ -159,7 +161,10 @@ def public_article_sql() -> str:
             CASE
                 WHEN COALESCE(v.validated_pillar, a.predicted_pillar) = 'No class'
                     THEN 'No class'
-                ELSE COALESCE(v.validated_axis, a.predicted_axis, '')
+                WHEN v.validated_axis IS NOT NULL AND TRIM(v.validated_axis) != '' THEN v.validated_axis
+                WHEN COALESCE(a.axis_pillar,a.predicted_pillar) = COALESCE(v.validated_pillar,a.predicted_pillar)
+                    THEN COALESCE(a.predicted_axis,'')
+                ELSE ''
             END AS axis,
             COALESCE(v.validated_pillar, a.predicted_pillar) AS final_pillar,
             CASE
@@ -491,7 +496,7 @@ def citation_start():
 
 
 @app.post("/api/pipelines/{kind}", status_code=202)
-def pipeline_start(kind: Literal["predict", "retrain"], _admin: str = Depends(require_admin)):
+def pipeline_start(kind: Literal["predict", "retrain", "report"], _admin: str = Depends(require_admin)):
     from dashboard.scripts.pipeline_jobs import enabled, start_job, PipelineBusy
     if not enabled():
         raise HTTPException(status_code=403, detail="Traitements désactivés : configurer SEQUOIA_ENABLE_PIPELINE_JOBS=1 dans l’environnement de test.")
@@ -500,6 +505,45 @@ def pipeline_start(kind: Literal["predict", "retrain"], _admin: str = Depends(re
     except PipelineBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id}
+
+
+@app.get("/api/reports")
+def list_reports(_admin: str = Depends(require_admin)):
+    from dashboard.scripts.veille_report import report_summary
+    from dashboard.scripts.pipeline_jobs import enabled
+    with connect_db(readonly=True) as con:
+        rows = con.execute('SELECT id,generated_at,recent_since,article_count,recent_count '
+                           'FROM veille_reports ORDER BY rowid DESC').fetchall()
+    return {'enabled': enabled(), 'items': [report_summary(row) for row in rows]}
+
+
+@app.get("/api/reports/{report_id}/{format}")
+def report_download(report_id: str, format: Literal['html', 'pdf'],
+                    _admin: str = Depends(require_admin)):
+    from dashboard.scripts.veille_report import reports_directory
+    with connect_db(readonly=True) as con:
+        report = con.execute('SELECT id,generated_at FROM veille_reports WHERE id=?', (report_id,)).fetchone()
+    if report is None:
+        raise HTTPException(status_code=404, detail='Rapport introuvable.')
+    # IDs are generated UUIDs, never user-supplied paths.
+    if len(report['id']) != 32 or any(char not in '0123456789abcdef' for char in report['id']):
+        raise HTTPException(status_code=404, detail='Rapport introuvable.')
+    path = reports_directory() / report['id'] / ('report.' + format)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail='Fichier de rapport absent ; relancer la génération.')
+    headers = {'Cache-Control': 'private, no-cache'}
+    if format == 'pdf':
+        return FileResponse(path, media_type='application/pdf', headers=headers,
+                            filename='sequoia-veille-' + report['generated_at'][:10] + '.pdf')
+    return FileResponse(path, media_type='text/html', headers=headers)
+
+
+@app.get("/rapports.html", include_in_schema=False)
+def reports_page(_admin: str = Depends(require_admin)):
+    page = SITE_DIR / 'rapports.html'
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail='Lance `quarto render dashboard` pour construire la page.')
+    return FileResponse(page)
 
 
 @app.get("/api/articles/validated/list")
@@ -527,6 +571,14 @@ def dashboard_publications():
     with connect_db(readonly=True) as con:
         rows = con.execute(public_article_sql() + " ORDER BY a.year DESC, a.hal_id").fetchall()
     return {"count": len(rows), "items": rows_to_dicts(rows)}
+
+
+@app.get("/api/dashboard/resources")
+def dashboard_resources():
+    from dashboard.scripts.resource_catalog import catalog
+    with connect_db(readonly=True) as con:
+        con.execute('BEGIN')
+        return catalog(con)
 
 
 @app.get("/api/dashboard/citations-status")
