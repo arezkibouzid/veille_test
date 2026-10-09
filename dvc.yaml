@@ -1,3 +1,5 @@
+# Pipeline de réentraînement, exécuté sur la VM par `dvc repro` (bouton
+# « Réentraîner le modèle »). L'état DVC (.dvc/, dvc.lock, cache) reste sur la VM.
 stages:
   snapshot_db:
     cmd: python -m dashboard.scripts.snapshot_db --output dashboard/data/snapshots/sequoia_v2_snapshot.db
@@ -24,7 +26,11 @@ stages:
       - src/encoder.py
       - config/config.py
     outs:
-      - mpnet_sgd_artifacts/mpnet_encoder
+      # Suivis par empreinte seulement : les copier dans le cache DVC doublerait
+      # plusieurs Go sur le disque de la VM.
+      - mpnet_sgd_artifacts/mpnet_encoder:
+          cache: false
+          persist: true
 
   train_and_evaluate:
     cmd: python main.py --database dashboard/data/snapshots/sequoia_v2_snapshot.db
@@ -39,8 +45,11 @@ stages:
       - dashboard/scripts/model_store.py
     outs:
       - mpnet_sgd_artifacts/versions:
+          cache: false
           persist: true
-      - mpnet_sgd_artifacts/subaxis_references.joblib
+      - mpnet_sgd_artifacts/subaxis_references.joblib:
+          cache: false
+          persist: true
     metrics:
       - mpnet_sgd_artifacts/latest_training.json:
           cache: false

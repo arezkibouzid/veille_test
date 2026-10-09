@@ -10,6 +10,10 @@ mlflow.db
 # Base SQLite opérationnelle et snapshots : jamais dans Git
 dashboard/data/
 
+# État DVC : il vit sur la VM avec les données
+.dvc/
+dvc.lock
+
 # Anciens prototypes
 hal_sequoia_extractor.py
 mpnet_sgd_deployment_pipeline.ipynb
