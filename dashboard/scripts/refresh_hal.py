@@ -55,6 +55,8 @@ HAL_FIELDS = [
 ]
 HAL_FIELDS += HAL_RESOURCE_FIELDS
 
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
 
 DOC_TYPE_LABELS = {
     "ART": "Article",
@@ -169,7 +171,7 @@ def _get_with_retry(
     max_retries: int = 4,
     base_delay: float = 3.0,
 ):
-    """GET HTTP avec retry exponentiel sur erreurs réseau transitoires."""
+    """GET HTTP avec retry exponentiel sur erreurs réseau ou serveur transitoires."""
 
     for attempt in range(
         max_retries + 1
@@ -189,7 +191,12 @@ def _get_with_retry(
             requests.exceptions.ConnectTimeout,
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
-        ):
+            requests.exceptions.HTTPError,
+        ) as exc:
+            status = getattr(exc.response, "status_code", None)
+            if isinstance(exc, requests.exceptions.HTTPError) and status not in RETRY_STATUS:
+                raise
+
             if attempt == max_retries:
                 raise
 
@@ -199,7 +206,7 @@ def _get_with_retry(
             )
 
             print(
-                f"Erreur réseau. "
+                f"Erreur HAL transitoire ({status or type(exc).__name__}). "
                 f"Nouvel essai dans {delay:.0f}s..."
             )
 
@@ -272,7 +279,20 @@ def fetch_hal() -> list[dict]:
 
         time.sleep(0.2)
 
+    if len(documents) != total:
+        # Une collection tronquée ferait croire à des retraits de notices.
+        raise RuntimeError(
+            f"Réponse HAL incomplète : {len(documents)} / {total} notices"
+        )
+
     return documents
+
+
+def load_notices(path: Path) -> list[dict]:
+    """Lit des notices HAL depuis un fichier JSONL (une notice par ligne)."""
+
+    with Path(path).open(encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
 def to_dataframe(
@@ -586,8 +606,9 @@ def upsert_hal(dataframe: pd.DataFrame, *, collection_complete=False) -> tuple[i
     return inserted, updated, total
 
 
-def refresh_hal() -> dict:
-    documents = enrich_tei(fetch_hal())
+def refresh_hal(source: Path | None = None) -> dict:
+    """Met à jour SQLite depuis l'API HAL, ou depuis un fichier JSONL déjà synchronisé."""
+    documents = enrich_tei(load_notices(source) if source else fetch_hal())
     resource_failures = enrich_doi_resources(documents)
     dataframe = to_dataframe(documents)
     inserted, updated, total = upsert_hal(dataframe, collection_complete=True)
@@ -596,8 +617,13 @@ def refresh_hal() -> dict:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="HAL vers SQLite").parse_args()
-    print(refresh_hal())
+    parser = argparse.ArgumentParser(description="HAL vers SQLite")
+    parser.add_argument(
+        "--from-file",
+        type=Path,
+        help="Fichier JSONL de notices au lieu de l'API HAL (rejeu hors ligne)",
+    )
+    print(refresh_hal(parser.parse_args().from_file))
     print(f"Base SQLite : {database_path()}")
 
 

@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+**/__pycache__
+.pytest_cache
+dashboard/.quarto
+dashboard/_site
+dashboard/data
+mpnet_sgd_artifacts
+mlruns
+mlflow.db
+tests
+*.ipynb

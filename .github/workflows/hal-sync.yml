@@ -1,0 +1,38 @@
+name: Ingestion HAL SEQUOIA
+
+# Déclenche chaque jour, sur la VM, la récupération des nouvelles publications de
+# https://hal.science/SEQUOIA via l'API HAL, puis leur classification.
+# Aucune donnée ne transite par GitHub : la base SQLite reste sur la VM.
+#
+# Secrets requis : SEQUOIA_API_URL, SEQUOIA_API_USER, SEQUOIA_API_PASSWORD.
+# La VM doit définir SEQUOIA_ENABLE_PIPELINE_JOBS=1.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hal-sync
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Récupérer et classer les nouvelles publications HAL
+        env:
+          SEQUOIA_API_URL: ${{ secrets.SEQUOIA_API_URL }}
+          SEQUOIA_API_USER: ${{ secrets.SEQUOIA_API_USER }}
+          SEQUOIA_API_PASSWORD: ${{ secrets.SEQUOIA_API_PASSWORD }}
+        run: python dashboard/scripts/trigger_pipeline.py predict

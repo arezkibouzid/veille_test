@@ -11,8 +11,11 @@ from src.evaluate_and_deploy import evaluate_and_register
 def main(database=None):
     df, train_df, test_df, text_columns = load_and_preprocess_data(database)
     from config.config import CLASSIFIER_PATH
-    from dashboard.scripts.db import connect_db
-    with connect_db(readonly=True) as con:
+    from dashboard.scripts.db import connect_db, ensure_schema
+    with connect_db() as con:
+        # Les versions de modèle sont enregistrées dans la base vivante, même si
+        # l'entraînement lit un snapshot ; elle peut ne pas encore exister.
+        ensure_schema(con)
         has_active = con.execute("SELECT 1 FROM model_versions WHERE status='active'").fetchone() is not None
     if CLASSIFIER_PATH.exists() or has_active:
         from dashboard.scripts.model_store import active_bundle
