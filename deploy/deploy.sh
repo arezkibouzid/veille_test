@@ -17,8 +17,8 @@ NAME=${SEQUOIA_CONTAINER:-sequoia-dashboard}
 PUBLISH=${SEQUOIA_PUBLISH:-127.0.0.1:8090}
 # Image contenant déjà Quarto et les dépendances Python (la VM a peu de disque).
 BASE_IMAGE=${SEQUOIA_BASE_IMAGE:-sequoia-dbfirst-test:20261004}
-MEMORY=${SEQUOIA_MEMORY:-900m}
-MEMORY_SWAP=${SEQUOIA_MEMORY_SWAP:-1800m}
+MEMORY=${SEQUOIA_MEMORY:-1400m}
+MEMORY_SWAP=${SEQUOIA_MEMORY_SWAP:-2800m}
 
 cd "$(git rev-parse --show-toplevel)"
 TAG=$(date -u +%Y%m%dT%H%M%S)-$(git rev-parse --short HEAD)
