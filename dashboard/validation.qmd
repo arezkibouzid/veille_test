@@ -30,7 +30,6 @@ execute:
 </div>
 
 <div class="action-row">
-  <button id="predict-new" class="btn-primary" disabled>Prédire nouveaux articles</button>
   <button id="retrain-model" class="btn-accent" disabled>Réentraîner le modèle</button>
 </div>
 <div id="pipeline-message" class="validation-message" role="status" aria-live="polite"></div>
@@ -583,7 +582,6 @@ execute:
     }
   );
 
-  const predictButton = el("predict-new");
   const retrainButton = el("retrain-model");
   const pipelineMessage = el("pipeline-message");
   let pipelineEnabled = false;
@@ -591,7 +589,6 @@ execute:
 
   function setPipelineBusy(busy) {
     pipelineBusy = busy;
-    predictButton.disabled = busy || !pipelineEnabled;
     retrainButton.disabled = busy || !pipelineEnabled;
   }
 
@@ -659,7 +656,6 @@ execute:
     }
   }
 
-  predictButton.addEventListener("click", () => startPipeline("predict"));
   retrainButton.addEventListener("click", () => startPipeline("retrain"));
 
   async function initialize() {
