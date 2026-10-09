@@ -1,9 +1,7 @@
 import time
 import os
-import json
 import hashlib
 import numpy as np
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from config.config import ENCODER_PATH, MODEL_NAME, EMBEDDING_CACHE_PATH
 
@@ -20,37 +18,31 @@ def get_or_compute_embeddings(encoder, train_df, test_df):
     batch_size = int(os.getenv("SEQUOIA_ENCODING_BATCH_SIZE", "8"))
     if batch_size < 1:
         raise ValueError("SEQUOIA_ENCODING_BATCH_SIZE doit être positif.")
-    train_texts = train_df['text_for_classification'].tolist()
-    test_texts = test_df['text_for_classification'].tolist()
+    texts = train_df['text_for_classification'].tolist() + test_df['text_for_classification'].tolist()
+    keys = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts]
 
-    fingerprint_data = {
-        "model_name": MODEL_NAME,
-        "normalize_embeddings": True,
-        "train_texts": train_texts,
-        "test_texts": test_texts,
-    }
-    current_fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    cache_hit = False
+    # Cache par texte : un réentraînement n'encode que les articles nouveaux ou modifiés.
+    cached = {}
     if EMBEDDING_CACHE_PATH.exists():
         with np.load(EMBEDDING_CACHE_PATH, allow_pickle=False) as cache:
-            if str(cache.get("fingerprint", "")) == current_fingerprint:
-                train_embeddings = cache["train_embeddings"]
-                test_embeddings = cache["test_embeddings"]
-                cache_hit = True
+            if "keys" in cache and str(cache["model_name"]) == MODEL_NAME:
+                cached = dict(zip(cache["keys"].tolist(), cache["embeddings"]))
 
-    if not cache_hit:
-        print("🔄 Cache miss. Computing embeddings...")
-        train_embeddings = encoder.encode(train_texts, normalize_embeddings=True, show_progress_bar=True, batch_size=batch_size)
-        test_embeddings = encoder.encode(test_texts, normalize_embeddings=True, show_progress_bar=True, batch_size=batch_size)
+    missing = {key: text for key, text in zip(keys, texts) if key not in cached}
+    if missing:
+        print(f"🔄 Computing {len(missing)}/{len(texts)} embeddings...")
+        vectors = encoder.encode(list(missing.values()), normalize_embeddings=True,
+                                 show_progress_bar=True, batch_size=batch_size)
+        cached.update(zip(missing, vectors))
+        EMBEDDING_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        kept = sorted(set(keys))
         np.savez_compressed(
             EMBEDDING_CACHE_PATH,
-            train_embeddings=train_embeddings,
-            test_embeddings=test_embeddings,
-            fingerprint=np.array(current_fingerprint)
+            keys=np.array(kept),
+            embeddings=np.stack([cached[key] for key in kept]),
+            model_name=np.array(MODEL_NAME),
         )
 
+    embeddings = np.stack([cached[key] for key in keys])
     embedding_seconds = time.perf_counter() - embedding_started
-    return train_embeddings, test_embeddings, cache_hit, embedding_seconds
+    return embeddings[:len(train_df)], embeddings[len(train_df):], not missing, embedding_seconds

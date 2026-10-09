@@ -31,6 +31,7 @@ def compute_subaxis_references(encoder):
             'names': subaxis_names,
             'embeddings': encoder.encode(subaxis_texts, normalize_embeddings=True, show_progress_bar=False),
         }
-    
+
+    SUBAXIS_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({"_fingerprint": current_subaxis_fingerprint, "references": subaxis_references}, SUBAXIS_PATH)
     return subaxis_references

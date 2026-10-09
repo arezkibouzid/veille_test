@@ -1,6 +1,15 @@
 .venv/
+__pycache__/
+.pytest_cache/
+
+# Artefacts de modèles et suivi d'expériences (gérés par DVC / MLflow)
 mpnet_sgd_artifacts/
-./data/
-./mlruns/
-./mlflow.db
-./__pycache__/
+mlruns/
+mlflow.db
+
+# Base SQLite opérationnelle et snapshots : jamais dans Git
+dashboard/data/
+
+# Anciens prototypes
+hal_sequoia_extractor.py
+mpnet_sgd_deployment_pipeline.ipynb

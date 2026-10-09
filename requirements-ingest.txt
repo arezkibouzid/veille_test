@@ -1,0 +1,3 @@
+# Dépendances minimales de l'ingestion HAL vers SQLite et des tests (CI).
+pandas>=2.2,<3
+requests>=2.32,<3

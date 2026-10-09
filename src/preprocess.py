@@ -1,11 +1,9 @@
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from config.config import CANONICAL_LABELS, PILLAR_MAP, RANDOM_STATE
 from dashboard.scripts.db import connect_db
 
@@ -33,16 +31,23 @@ def load_dataset(database=None):
     return df, text_columns
 
 
+def in_holdout(hal_id):
+    """Affectation stable (~20 %) : un article ne change jamais de côté quand le dataset grandit.
+
+    Un tirage aléatoire redistribuait le holdout à chaque nouvelle validation, si bien que
+    le modèle actif était réévalué sur des articles vus à l'entraînement.
+    """
+    digest = hashlib.sha256(f'{RANDOM_STATE}:{hal_id}'.encode()).digest()
+    return int.from_bytes(digest[:8], 'big') % 5 == 0
+
+
 def load_and_preprocess_data(database=None):
     df, text_columns = load_dataset(database)
-    counts = df['manual_label'].value_counts()
-    test_rows = math.ceil(len(df) * 0.20)
-    if (set(counts.index) != set(CANONICAL_LABELS) or counts.min() < 2
-            or test_rows < len(counts) or len(df) - test_rows < len(counts)):
-        raise ValueError('Dataset insuffisant : les quatre piliers doivent être représentés, '
-                         'avec au moins deux validations par pilier et un holdout stratifié possible.')
-    train_df, test_df = train_test_split(
-        df, test_size=0.20, stratify=df['manual_label'], random_state=RANDOM_STATE)
+    holdout = df['halId_s'].map(in_holdout).astype(bool)
+    train_df, test_df = df[~holdout], df[holdout]
+    if any(set(part['manual_label']) != set(CANONICAL_LABELS) for part in (train_df, test_df)):
+        raise ValueError('Dataset insuffisant : les quatre piliers doivent être représentés '
+                         "à la fois dans l'entraînement et dans le holdout.")
     return df, train_df, test_df, text_columns
 
 
