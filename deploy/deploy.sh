@@ -5,7 +5,7 @@
 #
 # Le code de l'arbre de travail est envoyé sur la VM, l'image y est construite,
 # puis le conteneur SEQUOIA_CONTAINER est recréé. Les données ne quittent jamais
-# la VM : ~/sequoia-dashboard/{data,models} sont montés dans le conteneur et
+# la VM : ~/sequoia-dashboard/{data,models,dvc} sont montés dans le conteneur et
 # ~/sequoia-dashboard/sequoia.env fournit les identifiants. Aucun autre
 # conteneur n'est modifié.
 set -euo pipefail
@@ -35,6 +35,11 @@ DIR=$HOME/$REMOTE_DIR
 [ -f "$DIR/data/sequoia_v2.db" ] || { echo "Base absente : $DIR/data/sequoia_v2.db" >&2; exit 1; }
 [ -f "$DIR/sequoia.env" ] || { echo "Identifiants absents : $DIR/sequoia.env" >&2; exit 1; }
 
+# État DVC persistant (configuration sans Git, dvc.lock, cache des snapshots).
+mkdir -p "$DIR/dvc"
+[ -f "$DIR/dvc/config" ] || printf '[core]\n    no_scm = True\n    analytics = false\n' > "$DIR/dvc/config"
+[ -f "$DIR/dvc/dvc.lock" ] || printf "schema: '2.0'\nstages: {}\n" > "$DIR/dvc/dvc.lock"
+
 echo "→ Construction de l'image $NAME:$TAG"
 sudo docker build -q --build-arg BASE_IMAGE="$BASE_IMAGE" -t "$NAME:$TAG" "$DIR/code" >/dev/null
 
@@ -49,6 +54,7 @@ sudo docker run -d --name "$NAME" --restart unless-stopped \
   -e SEQUOIA_ENABLE_PIPELINE_JOBS=1 -e OMP_NUM_THREADS=1 \
   -v "$DIR/data:/sequoia/dashboard/data" \
   -v "$DIR/models:/sequoia/mpnet_sgd_artifacts" \
+  -v "$DIR/dvc:/sequoia/.dvc" \
   "$NAME:$TAG" >/dev/null
 
 for attempt in $(seq 1 30); do

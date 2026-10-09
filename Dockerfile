@@ -25,7 +25,9 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
     && pip install --no-cache-dir -r requirements-optional.txt
 
 COPY . .
-RUN quarto render dashboard
+# L'état DVC est monté depuis la VM sur .dvc ; dvc.lock y est conservé avec lui.
+RUN ln -s .dvc/dvc.lock dvc.lock \
+    && quarto render dashboard
 
 EXPOSE 10000
 CMD ["uvicorn", "dashboard.scripts.validation_api:app", "--host", "0.0.0.0", "--port", "10000"]

@@ -11,3 +11,5 @@ mlruns
 mlflow.db
 tests
 *.ipynb
+.dvc
+dvc.lock

@@ -76,8 +76,22 @@ def predict_pipeline(progress):
     return {'hal': hal_result, 'openalex': oa_result, **result}
 
 
+def dvc_retrain(progress):
+    """Réentraîne par `dvc repro` : snapshot, manifeste et modèles sont tracés dans dvc.lock."""
+    import subprocess
+    from config.config import ARTIFACT_DIR, WORKSPACE
+    progress('Réentraînement DVC : snapshot, préparation, entraînement')
+    run = subprocess.run(['dvc', 'repro'], cwd=WORKSPACE, capture_output=True, text=True)
+    if run.returncode != 0:
+        lines = (run.stderr or run.stdout).strip().splitlines()
+        raise ValueError('dvc repro a échoué : ' + (lines[-1] if lines else f'code {run.returncode}'))
+    return json.loads((ARTIFACT_DIR / 'latest_training.json').read_text(encoding='utf-8'))
+
+
 def retrain_pipeline(progress, job_id):
-    from config.config import ARTIFACT_DIR
+    from config.config import ARTIFACT_DIR, WORKSPACE
+    if (WORKSPACE / '.dvc' / 'config').is_file():
+        return dvc_retrain(progress)
     from dashboard.scripts.snapshot_db import create_snapshot
     from main import main
     progress('Snapshot des validations SQLite')
