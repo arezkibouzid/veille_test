@@ -66,6 +66,12 @@ def test_trigger_waits_for_the_job_and_reports_it(monkeypatch):
     monkeypatch.setattr(trigger_pipeline.time, "sleep", lambda _: None)
     monkeypatch.setattr("sys.argv", ["trigger_pipeline", "predict"])
 
+    monkeypatch.delenv("SEQUOIA_API_URL", raising=False)
+    with pytest.raises(SystemExit, match="SEQUOIA_API_URL"):
+        trigger_pipeline.main()
+    for name, value in [("URL", "http://vm.example"), ("USER", "admin"), ("PASSWORD", "secret")]:
+        monkeypatch.setenv(f"SEQUOIA_API_{name}", value)
+
     trigger_pipeline.main()
     assert calls == [("POST", "/api/pipelines/predict"), ("GET", "/api/pipelines/jobs/abc"),
                      ("GET", "/api/pipelines/jobs/abc")]

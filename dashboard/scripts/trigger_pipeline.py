@@ -82,6 +82,14 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=3600, help="Attente maximale en secondes")
     args = parser.parse_args()
 
+    missing = [name for name in ("SEQUOIA_API_URL", "SEQUOIA_API_USER", "SEQUOIA_API_PASSWORD")
+               if not os.getenv(name, "").strip()]
+    if missing:
+        raise SystemExit("Variables absentes ou vides : " + ", ".join(missing)
+                         + " (secrets du dépôt GitHub : Settings → Secrets and variables → Actions).")
+    if not os.environ["SEQUOIA_API_URL"].startswith(("http://", "https://")):
+        raise SystemExit("SEQUOIA_API_URL doit commencer par http:// ou https://")
+
     job_id = call("POST", f"/api/pipelines/{args.kind}")["job_id"]
     print(f"Traitement {args.kind} démarré : {job_id}", flush=True)
     job = wait(job_id, args.timeout)
